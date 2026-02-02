@@ -1108,15 +1108,28 @@ class FinancialPlannerAI:
         positions = []
         for ticker, alloc in allocations.items():
             if alloc > 0.001:  # Skip tiny allocations
-                asset = cls.ASSET_CLASSES.get(ticker, {"name": ticker, "type": "equity"})
                 dollar_amount = budget * alloc
 
-                # Get REAL current price
-                stock_data = get_stock_data(ticker, period="5d")
-                if "error" not in stock_data and not stock_data["history"].empty:
-                    current_price = float(stock_data["history"]["Close"].iloc[-1])
+                # Check if this is a known ETF or a specific stock
+                if ticker in cls.ASSET_CLASSES:
+                    asset = cls.ASSET_CLASSES[ticker]
+                    asset_name = asset.get("name", ticker)
+                    asset_type = asset.get("type", "equity")
+                    # Get REAL current price
+                    stock_data = get_stock_data(ticker, period="5d")
+                    if "error" not in stock_data and not stock_data["history"].empty:
+                        current_price = float(stock_data["history"]["Close"].iloc[-1])
+                    else:
+                        current_price = 100
                 else:
-                    current_price = 100  # Fallback only if data unavailable
+                    # This is a specific stock (TSLA, AAPL, etc.) - fetch real info
+                    stock_info = cls.get_stock_info_for_portfolio(ticker)
+                    if stock_info.get("error"):
+                        # Skip stocks we can't find
+                        continue
+                    asset_name = stock_info.get("name", ticker)
+                    asset_type = "stock"  # Mark as individual stock
+                    current_price = stock_info.get("current_price", 100)
 
                 # Get REAL return data
                 real_return = real_returns.get(ticker)
@@ -1124,8 +1137,8 @@ class FinancialPlannerAI:
 
                 positions.append({
                     "ticker": ticker,
-                    "name": asset.get("name", ticker),
-                    "type": asset.get("type", "equity"),
+                    "name": asset_name,
+                    "type": asset_type,
                     "allocation": alloc,
                     "dollar_amount": dollar_amount,
                     "current_price": current_price,
@@ -1731,6 +1744,10 @@ class SmartFinancialAgent:
             r"make.*(portfolio|allocation)",
             r"(i have|invest|budget).+\$?\d+",
             r"(looking for|want|need).*(return|yield|income)",
+            r"(i have|got|with).+\d+.*(dollar|million|k\b|thousand)",  # "I have 1 million"
+            r"(scared|conservative|aggressive).*(want|treasury|stock)",  # Risk + assets
+            r"(want|need).*(treasury|bond|stock).*(and|some)",  # Multiple asset types
+            r"\$?\d+[mk]?\s*(to invest|budget|portfolio)",  # "$1M to invest"
         ],
         "add_stock": [
             r"(add|buy|purchase|get|include|want)\s+.*(stock|share|position)?",
