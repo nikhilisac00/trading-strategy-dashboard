@@ -20,13 +20,42 @@ from plotly.subplots import make_subplots
 import yfinance as yf
 import json
 import os
+import re
+import requests
 
-# OpenAI for AI-powered chatbot
+# spaCy for NLP (free, open-source)
 try:
-    from openai import OpenAI
-    OPENAI_AVAILABLE = True
+    import spacy
+    try:
+        nlp = spacy.load("en_core_web_sm")
+        SPACY_AVAILABLE = True
+    except OSError:
+        # Model not downloaded yet
+        SPACY_AVAILABLE = False
+        nlp = None
 except ImportError:
-    OPENAI_AVAILABLE = False
+    SPACY_AVAILABLE = False
+    nlp = None
+
+# Ollama for local LLM (free, runs locally)
+OLLAMA_AVAILABLE = False
+OLLAMA_MODEL = "llama3.2"  # Default model, can be changed
+
+def check_ollama():
+    """Check if Ollama is running locally."""
+    global OLLAMA_AVAILABLE
+    try:
+        response = requests.get("http://localhost:11434/api/tags", timeout=2)
+        if response.status_code == 200:
+            OLLAMA_AVAILABLE = True
+            return True
+    except:
+        pass
+    OLLAMA_AVAILABLE = False
+    return False
+
+# Check Ollama on startup
+check_ollama()
 
 # Import our modules
 from options_regime_selector import (
@@ -1620,490 +1649,745 @@ class FinancialPlannerAI:
 
 
 # ============================================================
-# OPENAI-POWERED AI AGENT (No Hallucination)
+# SMART AI AGENT (Free & Open Source - spaCy + Ollama)
 # ============================================================
 
-class OpenAIFinancialAgent:
+class SmartFinancialAgent:
     """
-    AI Financial Planner powered by OpenAI with function calling.
-    Uses tools to ground responses in real data - no hallucination.
+    AI Financial Planner powered by FREE open-source tools:
+    - spaCy for NLP entity extraction (always available)
+    - Ollama for local LLM (optional, if installed)
+    - Smart rule-based fallback
+
+    NO PAID APIs - 100% FREE
     """
 
-    SYSTEM_PROMPT = """You are an AI Financial Planner assistant. You help users create and manage investment portfolios.
+    # Comprehensive company name to ticker mapping
+    COMPANY_TICKERS = {
+        # Tech giants
+        "tesla": "TSLA", "apple": "AAPL", "microsoft": "MSFT", "google": "GOOGL",
+        "alphabet": "GOOGL", "amazon": "AMZN", "meta": "META", "facebook": "META",
+        "nvidia": "NVDA", "netflix": "NFLX", "adobe": "ADBE", "salesforce": "CRM",
+        "intel": "INTC", "amd": "AMD", "qualcomm": "QCOM", "cisco": "CSCO",
+        "oracle": "ORCL", "ibm": "IBM", "palantir": "PLTR", "snowflake": "SNOW",
+        # Finance
+        "jpmorgan": "JPM", "jp morgan": "JPM", "chase": "JPM", "goldman": "GS",
+        "goldman sachs": "GS", "morgan stanley": "MS", "bank of america": "BAC",
+        "wells fargo": "WFC", "citigroup": "C", "citi": "C", "blackrock": "BLK",
+        "visa": "V", "mastercard": "MA", "paypal": "PYPL", "square": "SQ", "block": "SQ",
+        "berkshire": "BRK-B", "berkshire hathaway": "BRK-B",
+        # Consumer
+        "disney": "DIS", "walmart": "WMT", "target": "TGT", "costco": "COST",
+        "home depot": "HD", "lowes": "LOW", "nike": "NKE", "starbucks": "SBUX",
+        "mcdonalds": "MCD", "coca-cola": "KO", "coke": "KO", "pepsi": "PEP",
+        "procter": "PG", "procter gamble": "PG", "johnson": "JNJ", "johnson johnson": "JNJ",
+        # Energy & Industrial
+        "exxon": "XOM", "chevron": "CVX", "shell": "SHEL", "bp": "BP",
+        "boeing": "BA", "lockheed": "LMT", "raytheon": "RTX", "caterpillar": "CAT",
+        "3m": "MMM", "honeywell": "HON", "general electric": "GE", "ge": "GE",
+        # Healthcare
+        "pfizer": "PFE", "moderna": "MRNA", "merck": "MRK", "abbvie": "ABBV",
+        "eli lilly": "LLY", "lilly": "LLY", "unitedhealth": "UNH", "cvs": "CVS",
+        # ETFs
+        "spy": "SPY", "qqq": "QQQ", "voo": "VOO", "vti": "VTI", "arkk": "ARKK",
+    }
 
-CRITICAL RULES - YOU MUST FOLLOW THESE:
-1. NEVER make up numbers, prices, returns, or any financial data
-2. ALWAYS use the provided tools to get real data
-3. When asked about stocks/prices/returns, use get_stock_info tool first
-4. When creating portfolios, use create_portfolio tool - don't invent allocations
-5. Be honest about limitations and risks
-6. Never promise specific returns - past performance doesn't guarantee future results
-7. If you don't know something, say so - don't guess
-
-AVAILABLE ACTIONS:
-- Create portfolios based on risk tolerance and budget
-- Add/remove specific stocks from portfolios
-- Get current market conditions (VIX, yield curve)
-- Analyze and rebalance existing portfolios
-- Look up stock information
-
-RISK PROFILES (from most to least conservative):
-- very_conservative: 5-15% equity, 50-75% treasury, minimal risk
-- conservative: 20-40% equity, 10-30% treasury
-- moderate: 40-60% equity, 5-20% treasury (default)
-- aggressive: 60-85% equity, 0-15% treasury
-- very_aggressive: 80-100% equity, high risk tolerance
-
-When users describe their risk tolerance with words like "scared", "safe", "cautious" -> very_conservative or conservative
-When they say "growth", "risky", "aggressive" -> aggressive or very_aggressive
-
-Always confirm what you understood before executing actions."""
-
-    # Define tools for function calling
-    TOOLS = [
-        {
-            "type": "function",
-            "function": {
-                "name": "create_portfolio",
-                "description": "Create a diversified investment portfolio based on user's risk profile, budget, and preferences. Returns real allocations with current prices.",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "risk_level": {
-                            "type": "string",
-                            "enum": ["very_conservative", "conservative", "moderate", "aggressive", "very_aggressive"],
-                            "description": "User's risk tolerance level"
-                        },
-                        "budget": {
-                            "type": "number",
-                            "description": "Total investment budget in dollars"
-                        },
-                        "treasury_pct": {
-                            "type": "number",
-                            "description": "Optional: specific treasury allocation (0.0 to 1.0). Use 0.6 for 'a lot of treasury'"
-                        },
-                        "specific_stocks": {
-                            "type": "array",
-                            "items": {"type": "string"},
-                            "description": "Optional: specific stock tickers to include (e.g., ['TSLA', 'AAPL'])"
-                        }
-                    },
-                    "required": ["risk_level", "budget"]
-                }
-            }
+    # Risk level keywords with confidence scores
+    RISK_KEYWORDS = {
+        "very_conservative": {
+            "phrases": ["very conservative", "extremely conservative", "ultra safe",
+                       "scared of risk", "scared", "terrified", "hate risk", "no risk",
+                       "fear risk", "risk averse", "very safe", "super safe", "minimal risk",
+                       "can't afford to lose", "retirement money", "life savings"],
+            "weight": 1.0
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "add_stock_to_portfolio",
-                "description": "Add a specific stock to the user's portfolio",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ticker": {
-                            "type": "string",
-                            "description": "Stock ticker symbol (e.g., AAPL, TSLA, MSFT)"
-                        },
-                        "amount": {
-                            "type": "number",
-                            "description": "Dollar amount to invest in this stock"
-                        },
-                        "shares": {
-                            "type": "integer",
-                            "description": "Alternative: number of shares to buy"
-                        }
-                    },
-                    "required": ["ticker"]
-                }
-            }
+        "conservative": {
+            "phrases": ["conservative", "safe", "low risk", "cautious", "careful",
+                       "preserve capital", "preservation", "stable", "secure", "protect"],
+            "weight": 0.8
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_stock_info",
-                "description": "Get real-time information about a stock including price, beta, sector, and recent performance",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ticker": {
-                            "type": "string",
-                            "description": "Stock ticker symbol"
-                        }
-                    },
-                    "required": ["ticker"]
-                }
-            }
+        "moderate": {
+            "phrases": ["moderate", "balanced", "medium", "average", "normal",
+                       "some risk", "mix", "diversified", "middle ground"],
+            "weight": 0.5
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_portfolio_status",
-                "description": "Get the current status of user's portfolio including all positions, total value, and allocation breakdown",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
+        "aggressive": {
+            "phrases": ["aggressive", "growth", "risky", "high return", "high growth",
+                       "willing to risk", "can handle risk", "long term growth"],
+            "weight": 0.3
         },
-        {
-            "type": "function",
-            "function": {
-                "name": "analyze_and_rebalance",
-                "description": "Analyze the current portfolio for rebalancing needs based on risk metrics (Beta for equities, Duration for bonds)",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "execute": {
-                            "type": "boolean",
-                            "description": "If true, execute the rebalancing trades. If false, just show suggestions."
-                        }
-                    },
-                    "required": []
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "get_market_conditions",
-                "description": "Get current market conditions including VIX regime, yield curve status, and entry signals",
-                "parameters": {
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                }
-            }
-        },
-        {
-            "type": "function",
-            "function": {
-                "name": "remove_stock_from_portfolio",
-                "description": "Remove a stock from the user's portfolio",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "ticker": {
-                            "type": "string",
-                            "description": "Stock ticker symbol to remove"
-                        }
-                    },
-                    "required": ["ticker"]
-                }
-            }
+        "very_aggressive": {
+            "phrases": ["very aggressive", "very risky", "maximum growth", "yolo",
+                       "high risk high reward", "speculative", "moon", "all in"],
+            "weight": 0.1
         }
-    ]
+    }
+
+    # Intent patterns
+    INTENT_PATTERNS = {
+        "create_portfolio": [
+            r"create.*(portfolio|allocation)",
+            r"build.*(portfolio|allocation)",
+            r"make.*(portfolio|allocation)",
+            r"(i have|invest|budget).+\$?\d+",
+            r"(looking for|want|need).*(return|yield|income)",
+        ],
+        "add_stock": [
+            r"(add|buy|purchase|get|include|want)\s+.*(stock|share|position)?",
+            r"(add|buy|purchase)\s+\$?\d+.*\s+(of|worth|in)",
+            r"\d+\s+shares?\s+(of\s+)?",
+        ],
+        "remove_stock": [
+            r"(remove|sell|drop|delete|get rid)\s+",
+        ],
+        "rebalance": [
+            r"rebalance",
+            r"optimize.*portfolio",
+            r"adjust.*allocation",
+            r"fix.*portfolio",
+        ],
+        "portfolio_status": [
+            r"(show|what|how).*(portfolio|holdings|positions)",
+            r"(my|current)\s+(portfolio|holdings|positions)",
+        ],
+        "market_conditions": [
+            r"(market|vix|volatility|yield|curve)",
+            r"(what|how).*(market|economy)",
+        ],
+        "stock_info": [
+            r"(tell|show|what|how).*(about|is)\s+[A-Z]{1,5}",
+            r"(price|info|information).*(of|for|about)",
+        ],
+    }
 
     @classmethod
-    def get_client(cls):
-        """Get OpenAI client with API key from environment or secrets."""
-        api_key = os.environ.get("OPENAI_API_KEY")
-        if not api_key:
-            # Try Streamlit secrets
+    def extract_entities_spacy(cls, text: str) -> dict:
+        """Use spaCy to extract entities from text."""
+        entities = {
+            "money": [],
+            "percentages": [],
+            "companies": [],
+            "tickers": [],
+            "numbers": [],
+        }
+
+        if not SPACY_AVAILABLE or nlp is None:
+            return entities
+
+        doc = nlp(text)
+
+        for ent in doc.ents:
+            if ent.label_ == "MONEY":
+                # Extract numeric value from money
+                amount_str = re.sub(r'[^\d.]', '', ent.text)
+                if amount_str:
+                    try:
+                        entities["money"].append(float(amount_str))
+                    except ValueError:
+                        pass
+            elif ent.label_ == "PERCENT":
+                pct_str = re.sub(r'[^\d.]', '', ent.text)
+                if pct_str:
+                    try:
+                        entities["percentages"].append(float(pct_str))
+                    except ValueError:
+                        pass
+            elif ent.label_ == "ORG":
+                entities["companies"].append(ent.text.lower())
+            elif ent.label_ in ["CARDINAL", "QUANTITY"]:
+                num_str = re.sub(r'[^\d.]', '', ent.text)
+                if num_str:
+                    try:
+                        entities["numbers"].append(float(num_str))
+                    except ValueError:
+                        pass
+
+        # Also find tickers (1-5 uppercase letters)
+        ticker_pattern = r'\b([A-Z]{1,5})\b'
+        potential_tickers = re.findall(ticker_pattern, text)
+        common_words = {"I", "A", "THE", "AND", "FOR", "TO", "IN", "OF", "IS", "IT",
+                       "MY", "ME", "BE", "DO", "SO", "IF", "OR", "AS", "AT", "BY"}
+        entities["tickers"] = [t for t in potential_tickers if t not in common_words]
+
+        return entities
+
+    @classmethod
+    def extract_entities_regex(cls, text: str) -> dict:
+        """Fallback regex-based entity extraction."""
+        entities = {
+            "money": [],
+            "percentages": [],
+            "companies": [],
+            "tickers": [],
+            "numbers": [],
+        }
+
+        # Money patterns
+        money_patterns = [
+            r'\$\s*([\d,]+(?:\.\d{2})?)\s*(?:million|m|M)?',
+            r'([\d,]+(?:\.\d{2})?)\s*(?:dollars?|USD)',
+            r'([\d,]+)\s*(?:k|K)\b',
+        ]
+        for pattern in money_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                try:
+                    amount = float(match.replace(',', ''))
+                    if 'k' in text.lower() and amount < 10000:
+                        amount *= 1000
+                    if 'million' in text.lower() or 'm' in text.lower():
+                        if amount < 1000:
+                            amount *= 1000000
+                    if amount >= 1000:
+                        entities["money"].append(amount)
+                except ValueError:
+                    pass
+
+        # Percentage patterns
+        pct_matches = re.findall(r'(\d+(?:\.\d+)?)\s*%', text)
+        entities["percentages"] = [float(p) for p in pct_matches]
+
+        # Large numbers (likely budgets)
+        large_nums = re.findall(r'\b(\d{4,})\b', text.replace(',', ''))
+        for num in large_nums:
             try:
-                api_key = st.secrets.get("OPENAI_API_KEY")
-            except:
+                n = float(num)
+                if n >= 10000 and n not in entities["money"]:
+                    entities["money"].append(n)
+            except ValueError:
                 pass
-        if not api_key:
-            return None
-        return OpenAI(api_key=api_key)
+
+        return entities
 
     @classmethod
-    def execute_tool(cls, tool_name: str, arguments: dict) -> str:
-        """Execute a tool and return the result as a string."""
+    def resolve_companies(cls, text: str, entities: dict) -> list:
+        """Resolve company names and tickers."""
+        tickers = list(entities.get("tickers", []))
+        text_lower = text.lower()
+
+        # Check for company names
+        for company, ticker in cls.COMPANY_TICKERS.items():
+            if company in text_lower and ticker not in tickers:
+                tickers.append(ticker)
+
+        # Check if any detected companies map to tickers
+        for company in entities.get("companies", []):
+            if company.lower() in cls.COMPANY_TICKERS:
+                ticker = cls.COMPANY_TICKERS[company.lower()]
+                if ticker not in tickers:
+                    tickers.append(ticker)
+
+        return tickers
+
+    @classmethod
+    def detect_risk_level(cls, text: str) -> tuple:
+        """Detect risk level from text with confidence score."""
+        text_lower = text.lower()
+
+        # Check each risk level, starting from most specific
+        for level in ["very_conservative", "very_aggressive", "conservative", "aggressive", "moderate"]:
+            data = cls.RISK_KEYWORDS[level]
+            for phrase in data["phrases"]:
+                if phrase in text_lower:
+                    return level, 0.9  # High confidence for exact phrase match
+
+        # Fuzzy matching for partial matches
+        risk_scores = {}
+        for level, data in cls.RISK_KEYWORDS.items():
+            score = 0
+            for phrase in data["phrases"]:
+                words = phrase.split()
+                matches = sum(1 for word in words if word in text_lower)
+                if matches > 0:
+                    score += matches / len(words)
+            risk_scores[level] = score
+
+        if max(risk_scores.values()) > 0.3:
+            best_level = max(risk_scores, key=risk_scores.get)
+            return best_level, risk_scores[best_level]
+
+        return None, 0.0
+
+    @classmethod
+    def detect_intent(cls, text: str) -> tuple:
+        """Detect user intent from text."""
+        text_lower = text.lower()
+
+        intent_scores = {}
+        for intent, patterns in cls.INTENT_PATTERNS.items():
+            score = 0
+            for pattern in patterns:
+                if re.search(pattern, text_lower):
+                    score += 1
+            intent_scores[intent] = score
+
+        if max(intent_scores.values()) > 0:
+            best_intent = max(intent_scores, key=intent_scores.get)
+            return best_intent, intent_scores[best_intent]
+
+        return "unknown", 0
+
+    @classmethod
+    def detect_treasury_preference(cls, text: str) -> float:
+        """Detect treasury allocation preference."""
+        text_lower = text.lower()
+
+        # Heavy treasury indicators
+        heavy_patterns = [
+            (r"(a lot of|lots of|mostly|mainly|heavy|primarily|majority)\s+(treasury|treasuries|bonds)", 0.60),
+            (r"(60|70|80|90)\s*%?\s*(treasury|treasuries|in bonds)", None),  # Use the percentage
+            (r"very.*safe", 0.50),
+            (r"(all|most).*(treasury|bonds|fixed income)", 0.70),
+        ]
+
+        for pattern, default_pct in heavy_patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                # Check if there's a specific percentage
+                pct_match = re.search(r'(\d+)\s*%', match.group())
+                if pct_match:
+                    return float(pct_match.group(1)) / 100
+                elif default_pct:
+                    return default_pct
+
+        # Check for specific percentage mentions
+        treasury_pct = re.search(r'(\d+)\s*%?\s*(in\s+)?(treasury|treasuries)', text_lower)
+        if treasury_pct:
+            return float(treasury_pct.group(1)) / 100
+
+        return None
+
+    @classmethod
+    def parse_message_smart(cls, text: str) -> dict:
+        """Smart message parsing using spaCy + regex."""
+        # Get entities from spaCy or fallback to regex
+        if SPACY_AVAILABLE:
+            entities = cls.extract_entities_spacy(text)
+        else:
+            entities = cls.extract_entities_regex(text)
+
+        # Also run regex to catch things spaCy might miss
+        regex_entities = cls.extract_entities_regex(text)
+
+        # Merge money amounts (deduplicate)
+        all_money = list(set(entities.get("money", []) + regex_entities.get("money", [])))
+
+        # Resolve companies and tickers
+        tickers = cls.resolve_companies(text, entities)
+
+        # Detect risk level
+        risk_level, risk_confidence = cls.detect_risk_level(text)
+
+        # Detect intent
+        intent, intent_confidence = cls.detect_intent(text)
+
+        # Detect treasury preference
+        treasury_pct = cls.detect_treasury_preference(text)
+
+        # Get budget (largest money amount, or largest number if no money detected)
+        budget = None
+        if all_money:
+            budget = max(all_money)
+        elif entities.get("numbers"):
+            large_nums = [n for n in entities["numbers"] if n >= 1000]
+            if large_nums:
+                budget = max(large_nums)
+
+        return {
+            "intent": intent,
+            "intent_confidence": intent_confidence,
+            "risk_level": risk_level,
+            "risk_confidence": risk_confidence,
+            "budget": budget,
+            "treasury_pct": treasury_pct,
+            "tickers": tickers,
+            "percentages": entities.get("percentages", []) + regex_entities.get("percentages", []),
+            "raw_entities": entities,
+        }
+
+    @classmethod
+    def call_ollama(cls, prompt: str, system_prompt: str = None) -> str:
+        """Call local Ollama LLM."""
+        if not OLLAMA_AVAILABLE:
+            return None
+
         try:
-            if tool_name == "create_portfolio":
-                risk_level = arguments.get("risk_level", "moderate")
-                budget = arguments.get("budget", 100000)
-                treasury_pct = arguments.get("treasury_pct")
-                specific_stocks = arguments.get("specific_stocks")
+            payload = {
+                "model": OLLAMA_MODEL,
+                "prompt": prompt,
+                "stream": False,
+                "options": {
+                    "temperature": 0.3,  # Lower = more factual
+                    "num_predict": 500,  # Limit response length
+                }
+            }
+
+            if system_prompt:
+                payload["system"] = system_prompt
+
+            response = requests.post(
+                "http://localhost:11434/api/generate",
+                json=payload,
+                timeout=30
+            )
+
+            if response.status_code == 200:
+                return response.json().get("response", "")
+        except Exception as e:
+            pass
+
+        return None
+
+    @classmethod
+    def execute_action(cls, intent: str, parsed: dict) -> str:
+        """Execute the detected action and return response."""
+        try:
+            if intent == "create_portfolio":
+                risk_level = parsed.get("risk_level") or "moderate"
+                budget = parsed.get("budget") or 100000
+                treasury_pct = parsed.get("treasury_pct")
+                tickers = parsed.get("tickers", [])
 
                 portfolio = FinancialPlannerAI.generate_portfolio(
                     risk_level=risk_level,
                     budget=budget,
                     treasury_pct=treasury_pct,
-                    specific_stocks=specific_stocks
+                    specific_stocks=tickers if tickers else None
                 )
 
-                # Store for later confirmation
                 st.session_state.pending_portfolio = portfolio
 
                 # Format response
-                result = f"""Portfolio Created (pending confirmation):
-- Total Investment: ${portfolio['total_budget']:,.0f}
-- Expected Return: {portfolio['expected_return']*100:.1f}% (based on historical data)
-- Portfolio Volatility: {portfolio['portfolio_risk']*100:.1f}%
-- Allocation: {portfolio['summary']['equity']*100:.0f}% Equity, {portfolio['summary']['treasury']*100:.0f}% Treasury, {portfolio['summary']['bonds']*100:.0f}% Bonds
+                response = f"""## Portfolio Created for You
 
-Positions:
+**Your Profile:** {risk_level.replace('_', ' ').title()}
+**Budget:** ${budget:,.0f}
+"""
+                if treasury_pct:
+                    response += f"**Treasury Allocation:** {treasury_pct*100:.0f}%\n"
+                if tickers:
+                    response += f"**Requested Stocks:** {', '.join(tickers)}\n"
+
+                response += f"""
+### Allocation Summary
+- **Equities:** {portfolio['summary']['equity']*100:.0f}%
+- **Treasury:** {portfolio['summary']['treasury']*100:.0f}%
+- **Bonds:** {portfolio['summary']['bonds']*100:.0f}%
+
+### Positions
+| Ticker | Name | Allocation | Amount |
+|--------|------|------------|--------|
 """
                 for pos in portfolio["positions"]:
-                    result += f"- {pos['ticker']} ({pos['name']}): {pos['allocation']*100:.1f}% = ${pos['dollar_amount']:,.0f}\n"
+                    response += f"| {pos['ticker']} | {pos['name']} | {pos['allocation']*100:.1f}% | ${pos['dollar_amount']:,.0f} |\n"
 
-                result += "\nAsk user to confirm before adding to portfolio."
-                return result
+                response += f"""
+**Expected Return:** {portfolio['expected_return']*100:.1f}% (based on historical data)
+**Portfolio Volatility:** {portfolio['portfolio_risk']*100:.1f}%
 
-            elif tool_name == "add_stock_to_portfolio":
-                ticker = arguments.get("ticker", "").upper()
-                amount = arguments.get("amount")
-                shares = arguments.get("shares")
+*Say 'yes' or 'confirm' to add these positions to your portfolio.*"""
 
-                stock_info = FinancialPlannerAI.get_stock_info_for_portfolio(ticker)
-                if stock_info.get("error"):
-                    return f"Error: Could not find stock {ticker} - {stock_info['error']}"
+                return response
 
-                if shares:
-                    quantity = shares
-                elif amount:
-                    quantity = int(amount / stock_info["current_price"])
-                else:
-                    quantity = max(1, int(1000 / stock_info["current_price"]))
+            elif intent == "add_stock":
+                if not parsed.get("tickers"):
+                    return "I'd be happy to add a stock to your portfolio. Which stock would you like? (e.g., 'add Tesla' or 'buy AAPL')"
 
-                position = {
-                    "ticker": stock_info["ticker"],
-                    "type": "Stock",
-                    "side": "Long",
-                    "quantity": quantity,
-                    "entry_price": stock_info["current_price"],
-                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                    "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
-                    "id": len(st.session_state.portfolio)
-                }
-                st.session_state.portfolio.append(position)
+                responses = []
+                for ticker in parsed["tickers"]:
+                    stock_info = FinancialPlannerAI.get_stock_info_for_portfolio(ticker)
+                    if stock_info.get("error"):
+                        responses.append(f"Could not find **{ticker}**: {stock_info['error']}")
+                        continue
 
-                value = quantity * stock_info["current_price"]
-                return f"""Added to portfolio:
-- {stock_info['ticker']} ({stock_info['name']})
-- Shares: {quantity} @ ${stock_info['current_price']:.2f}
-- Total Value: ${value:,.2f}
+                    # Determine quantity
+                    if parsed.get("budget"):
+                        quantity = int(parsed["budget"] / stock_info["current_price"])
+                    else:
+                        quantity = max(1, int(1000 / stock_info["current_price"]))
+
+                    position = {
+                        "ticker": stock_info["ticker"],
+                        "type": "Stock",
+                        "side": "Long",
+                        "quantity": quantity,
+                        "entry_price": stock_info["current_price"],
+                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                        "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
+                        "id": len(st.session_state.portfolio)
+                    }
+                    st.session_state.portfolio.append(position)
+
+                    value = quantity * stock_info["current_price"]
+                    responses.append(f"""**Added {stock_info['ticker']}** ({stock_info['name']})
+- Shares: {quantity} @ ${stock_info['current_price']:.2f} = ${value:,.2f}
 - Beta: {stock_info['beta']:.2f}
-- Sector: {stock_info['sector']}"""
+- Sector: {stock_info['sector']}""")
 
-            elif tool_name == "get_stock_info":
-                ticker = arguments.get("ticker", "").upper()
-                stock_info = FinancialPlannerAI.get_stock_info_for_portfolio(ticker)
-                if stock_info.get("error"):
-                    return f"Error: Could not find stock {ticker}"
+                # Calculate portfolio beta
+                portfolio_beta = FinancialPlannerAI.calculate_portfolio_beta(st.session_state.portfolio)
+                responses.append(f"\n**Portfolio Beta:** {portfolio_beta:.2f}")
 
-                return f"""Stock Information for {stock_info['ticker']}:
-- Name: {stock_info['name']}
-- Current Price: ${stock_info['current_price']:.2f}
-- Beta: {stock_info['beta']:.2f} (market risk)
-- Sector: {stock_info['sector']}
-- Industry: {stock_info['industry']}
-- 52-Week High: ${stock_info['52w_high']:.2f if stock_info['52w_high'] else 'N/A'}
-- 52-Week Low: ${stock_info['52w_low']:.2f if stock_info['52w_low'] else 'N/A'}
-- Dividend Yield: {stock_info['dividend_yield']*100:.2f}%"""
+                return "\n\n".join(responses)
 
-            elif tool_name == "get_portfolio_status":
+            elif intent == "remove_stock":
+                if not parsed.get("tickers"):
+                    return "Which stock would you like to remove? (e.g., 'remove AAPL')"
+
+                removed = []
+                for ticker in parsed["tickers"]:
+                    initial_count = len(st.session_state.portfolio)
+                    st.session_state.portfolio = [
+                        p for p in st.session_state.portfolio
+                        if p.get("ticker", "").upper() != ticker.upper()
+                    ]
+                    if len(st.session_state.portfolio) < initial_count:
+                        removed.append(ticker)
+
+                if removed:
+                    return f"Removed **{', '.join(removed)}** from your portfolio."
+                return f"Could not find {', '.join(parsed['tickers'])} in your portfolio."
+
+            elif intent == "portfolio_status":
                 positions = st.session_state.get("portfolio", [])
                 if not positions:
-                    return "Portfolio is empty. No positions yet."
+                    return "Your portfolio is empty. Tell me about your investment goals and I'll create a portfolio for you!"
 
                 total_value = 0
-                result = "Current Portfolio:\n"
+                response = "## Your Current Portfolio\n\n| Ticker | Shares | Price | Value |\n|--------|--------|-------|-------|\n"
+
                 for pos in positions:
                     ticker = pos.get("ticker", "")
                     qty = pos.get("quantity", 0)
-                    entry = pos.get("entry_price", 0)
-                    value = qty * entry
+                    price = pos.get("entry_price", 0)
+                    value = qty * price
                     total_value += value
-                    result += f"- {ticker}: {qty} shares @ ${entry:.2f} = ${value:,.2f}\n"
+                    response += f"| {ticker} | {qty} | ${price:.2f} | ${value:,.2f} |\n"
 
-                # Calculate beta
                 beta = FinancialPlannerAI.calculate_portfolio_beta(positions)
-                result += f"\nTotal Value: ${total_value:,.2f}"
-                result += f"\nPortfolio Beta: {beta:.2f}"
-                return result
+                response += f"\n**Total Value:** ${total_value:,.2f}\n**Portfolio Beta:** {beta:.2f}"
 
-            elif tool_name == "analyze_and_rebalance":
+                return response
+
+            elif intent == "rebalance":
                 positions = st.session_state.get("portfolio", [])
                 if not positions:
-                    return "No portfolio to analyze. Create a portfolio first."
+                    return "No portfolio to rebalance. Create one first!"
 
                 analysis = FinancialPlannerAI.analyze_portfolio_for_rebalancing(positions)
 
-                result = f"""Portfolio Analysis:
-- Total Value: ${analysis['total_value']:,.2f}
-- Equity: {analysis['current_allocation'].get('equity', 0)*100:.1f}%
+                response = f"""## Portfolio Rebalancing Analysis
+
+**Total Value:** ${analysis['total_value']:,.2f}
+
+### Current Allocation
+- Equities: {analysis['current_allocation'].get('equity', 0)*100:.1f}%
 - Treasury: {analysis['current_allocation'].get('treasury', 0)*100:.1f}%
 - Bonds: {analysis['current_allocation'].get('bond', 0)*100:.1f}%
 
-Risk Metrics:
-- Equity Beta: {analysis.get('equity_metrics', {}).get('beta', 'N/A')}
-- Bond Duration: {analysis.get('fixed_income_metrics', {}).get('duration', 'N/A')} years
-- Portfolio Volatility: {analysis.get('portfolio_metrics', {}).get('volatility', 'N/A')}%
-
-Needs Rebalancing: {'Yes' if analysis['needs_rebalancing'] else 'No'}
+### Risk Metrics
 """
-                if analysis["suggestions"]:
-                    result += "\nSuggestions:\n"
+                eq_metrics = analysis.get("equity_metrics", {})
+                fi_metrics = analysis.get("fixed_income_metrics", {})
+                response += f"- **Equity Beta:** {eq_metrics.get('beta', 'N/A')}\n"
+                response += f"- **Bond Duration:** {fi_metrics.get('duration', 0):.1f} years\n"
+
+                if analysis["needs_rebalancing"]:
+                    response += "\n### Suggestions\n"
                     for s in analysis["suggestions"]:
-                        result += f"- {s}\n"
+                        response += f"- {s}\n"
+                    response += "\n*Say 'execute rebalancing' to implement these changes.*"
+                else:
+                    response += "\n**Your portfolio is well-balanced!**"
 
-                return result
+                return response
 
-            elif tool_name == "get_market_conditions":
+            elif intent == "market_conditions":
                 vix_data = get_vix_stats()
                 vix_regime = determine_vix_regime(vix_data.get("current", 20))
                 yields = get_current_yields()
                 curve_regime = determine_curve_regime(yields)
 
-                return f"""Current Market Conditions:
-- VIX: {vix_data.get('current', 'N/A'):.1f} ({vix_regime})
-- VIX Percentile: {vix_data.get('percentile', 'N/A'):.0f}%
-- Yield Curve: {curve_regime}
+                return f"""## Current Market Conditions
+
+**VIX (Fear Index):** {vix_data.get('current', 'N/A'):.1f}
+- Regime: **{vix_regime}**
+- Percentile: {vix_data.get('percentile', 'N/A'):.0f}%
+
+**Yield Curve:** {curve_regime}
 - 10Y-2Y Spread: {yields.get('10Y', 0) - yields.get('2Y', 0):.2f}%
 
-Market Interpretation:
-- {'High fear/volatility - consider defensive positions' if vix_regime in ['ELEVATED', 'CRISIS'] else 'Normal volatility - standard positioning'}
-- {'Yield curve inverted - recession risk elevated' if 'Inverted' in curve_regime else 'Normal yield curve'}"""
+### Market Interpretation
+{"- High volatility - consider defensive positions" if vix_regime in ['ELEVATED', 'CRISIS'] else "- Normal volatility - standard positioning"}
+{"- Yield curve inverted - recession risk elevated" if 'Inverted' in curve_regime else "- Normal yield curve"}"""
 
-            elif tool_name == "remove_stock_from_portfolio":
-                ticker = arguments.get("ticker", "").upper()
-                initial_count = len(st.session_state.portfolio)
-                st.session_state.portfolio = [
-                    p for p in st.session_state.portfolio
-                    if p.get("ticker", "").upper() != ticker
-                ]
-                if len(st.session_state.portfolio) < initial_count:
-                    return f"Removed {ticker} from portfolio."
-                else:
-                    return f"Could not find {ticker} in portfolio."
+            elif intent == "stock_info":
+                if not parsed.get("tickers"):
+                    return "Which stock would you like to know about? (e.g., 'tell me about AAPL')"
+
+                responses = []
+                for ticker in parsed["tickers"][:3]:  # Limit to 3 stocks
+                    info = FinancialPlannerAI.get_stock_info_for_portfolio(ticker)
+                    if info.get("error"):
+                        responses.append(f"Could not find {ticker}")
+                        continue
+
+                    responses.append(f"""### {info['ticker']} - {info['name']}
+- **Price:** ${info['current_price']:.2f}
+- **Beta:** {info['beta']:.2f}
+- **Sector:** {info['sector']}
+- **Industry:** {info['industry']}
+- **52-Week Range:** ${info.get('52w_low', 0):.2f} - ${info.get('52w_high', 0):.2f}
+- **Dividend Yield:** {info.get('dividend_yield', 0)*100:.2f}%""")
+
+                return "\n\n".join(responses)
 
             else:
-                return f"Unknown tool: {tool_name}"
+                return None  # Unknown intent, will use fallback
 
         except Exception as e:
-            return f"Error executing {tool_name}: {str(e)}"
+            return f"Error executing action: {str(e)}"
+
+    @classmethod
+    def generate_smart_response(cls, parsed: dict, user_message: str) -> str:
+        """Generate a contextual response based on what we understood."""
+        parts = []
+
+        # Acknowledge what we understood
+        if parsed.get("risk_level"):
+            parts.append(f"I understand you have a **{parsed['risk_level'].replace('_', ' ')}** risk tolerance.")
+        if parsed.get("budget"):
+            parts.append(f"Budget: **${parsed['budget']:,.0f}**")
+        if parsed.get("treasury_pct"):
+            parts.append(f"Treasury preference: **{parsed['treasury_pct']*100:.0f}%**")
+        if parsed.get("tickers"):
+            parts.append(f"Stocks mentioned: **{', '.join(parsed['tickers'])}**")
+
+        if not parts:
+            # Didn't understand much, ask for clarification
+            return """I'm here to help you with your investments! You can:
+
+- **Create a portfolio:** "I'm conservative with $100,000 to invest"
+- **Add stocks:** "Add Tesla to my portfolio" or "Buy $5000 of AAPL"
+- **Check your portfolio:** "Show my holdings"
+- **Get market info:** "What are market conditions?"
+- **Rebalance:** "Rebalance my portfolio"
+
+What would you like to do?"""
+
+        return "\n".join(parts)
 
     @classmethod
     def chat(cls, user_message: str, chat_history: list) -> str:
-        """Process user message and return AI response using function calling."""
-        client = cls.get_client()
+        """Main chat function - uses Ollama if available, otherwise smart rules."""
 
-        if not client:
-            # Fallback to rule-based if no API key
-            response, portfolio, _ = FinancialPlannerAI.generate_response(
-                user_message, st.session_state.user_profile
-            )
-            if portfolio:
-                st.session_state.pending_portfolio = portfolio
-            return response
+        # Parse the message
+        parsed = cls.parse_message_smart(user_message)
 
-        # Build messages for API
-        messages = [{"role": "system", "content": cls.SYSTEM_PROMPT}]
+        # Check for confirmation of pending portfolio
+        if any(word in user_message.lower() for word in ["yes", "confirm", "do it", "proceed", "add it", "looks good"]):
+            if st.session_state.get("pending_portfolio"):
+                portfolio = st.session_state.pending_portfolio
+                for pos in portfolio["positions"]:
+                    stock_data = get_stock_data(pos["ticker"], period="5d")
+                    if "error" not in stock_data and not stock_data["history"].empty:
+                        current_price = float(stock_data["history"]["Close"].iloc[-1])
+                    else:
+                        current_price = pos.get("current_price", 100)
 
-        # Add recent chat history (last 10 messages for context)
-        for msg in chat_history[-10:]:
-            messages.append({"role": msg["role"], "content": msg["content"]})
+                    quantity = int(pos["dollar_amount"] / current_price)
+                    if quantity > 0:
+                        position = {
+                            "ticker": pos["ticker"],
+                            "type": "ETF" if pos["type"] in ["equity", "treasury", "bond", "corporate_bond", "high_yield", "tips"] else "Stock",
+                            "side": "Long",
+                            "quantity": quantity,
+                            "entry_price": current_price,
+                            "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                            "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
+                            "id": len(st.session_state.portfolio)
+                        }
+                        st.session_state.portfolio.append(position)
 
-        messages.append({"role": "user", "content": user_message})
+                st.session_state.pending_portfolio = None
+                return f"**Done!** Added {len(portfolio['positions'])} positions to your portfolio. Check the **Portfolio** tab to see them."
 
-        try:
-            # Call OpenAI with function calling
-            response = client.chat.completions.create(
-                model="gpt-4o-mini",  # Cost-effective, good at function calling
-                messages=messages,
-                tools=cls.TOOLS,
-                tool_choice="auto",
-                temperature=0.3,  # Lower temperature = less creative/more factual
-            )
+        # Try to execute the detected intent
+        intent = parsed.get("intent", "unknown")
+        result = cls.execute_action(intent, parsed)
 
-            assistant_message = response.choices[0].message
+        if result:
+            return result
 
-            # Check if AI wants to call tools
-            if assistant_message.tool_calls:
-                # Execute each tool call
-                tool_results = []
-                for tool_call in assistant_message.tool_calls:
-                    tool_name = tool_call.function.name
-                    arguments = json.loads(tool_call.function.arguments)
+        # If we have Ollama, use it for better understanding
+        if OLLAMA_AVAILABLE and intent == "unknown":
+            ollama_prompt = f"""You are a helpful financial advisor assistant. The user said: "{user_message}"
 
-                    result = cls.execute_tool(tool_name, arguments)
-                    tool_results.append({
-                        "tool_call_id": tool_call.id,
-                        "role": "tool",
-                        "content": result
-                    })
+Based on this, determine what they want and respond helpfully. Keep your response concise and actionable.
 
-                # Send tool results back to get final response
-                messages.append(assistant_message)
-                messages.extend(tool_results)
+If they want to:
+- Create a portfolio: Ask about their risk tolerance and budget
+- Add a stock: Confirm which stock and how much
+- Get information: Provide it
+- Something unclear: Ask clarifying questions
 
-                final_response = client.chat.completions.create(
-                    model="gpt-4o-mini",
-                    messages=messages,
-                    temperature=0.3,
-                )
+Respond naturally and helpfully:"""
 
-                return final_response.choices[0].message.content
+            ollama_response = cls.call_ollama(ollama_prompt)
+            if ollama_response:
+                return ollama_response
 
-            else:
-                # No tool calls, return direct response
-                return assistant_message.content
+        # Fallback to smart response based on what we parsed
+        return cls.generate_smart_response(parsed, user_message)
 
-        except Exception as e:
-            # Fallback to rule-based on error
-            response, portfolio, _ = FinancialPlannerAI.generate_response(
-                user_message, st.session_state.user_profile
-            )
-            if portfolio:
-                st.session_state.pending_portfolio = portfolio
-            return f"(AI unavailable, using basic mode)\n\n{response}"
+
+# (Old OpenAI code removed - now using SmartFinancialAgent above)
+
+
+def _placeholder_for_removed_old_code():
+    """This function exists only to maintain file structure during cleanup."""
+    pass
 
 
 # ============================================================
-# SIDEBAR - AI FINANCIAL PLANNER CHATBOT
+# SIDEBAR - AI FINANCIAL PLANNER CHATBOT (FREE - No API needed!)
 # ============================================================
 
 with st.sidebar:
     st.title("🤖 AI Financial Planner")
-    st.markdown("---")
 
-    # OpenAI API Key input (stored in session state)
-    if "openai_api_key" not in st.session_state:
-        st.session_state.openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    # Show AI status
+    ai_status = []
+    if SPACY_AVAILABLE:
+        ai_status.append("spaCy NLP")
+    if OLLAMA_AVAILABLE:
+        ai_status.append("Ollama LLM")
+    if not ai_status:
+        ai_status.append("Smart Rules")
 
-    with st.expander("⚙️ AI Settings", expanded=not st.session_state.openai_api_key):
-        api_key_input = st.text_input(
-            "OpenAI API Key",
-            value=st.session_state.openai_api_key,
-            type="password",
-            help="Enter your OpenAI API key for AI-powered responses. Get one at platform.openai.com"
-        )
-        if api_key_input != st.session_state.openai_api_key:
-            st.session_state.openai_api_key = api_key_input
-            os.environ["OPENAI_API_KEY"] = api_key_input
-            st.success("API key saved!")
-
-        if st.session_state.openai_api_key:
-            st.caption("✅ AI Mode: GPT-4o-mini with function calling")
-        else:
-            st.caption("⚠️ Basic Mode: Rule-based responses (add API key for AI)")
-
+    st.caption(f"🧠 AI: {' + '.join(ai_status)} | 100% FREE")
     st.markdown("---")
 
     # Chat interface
     st.markdown("### Chat with your AI Advisor")
 
     # Display chat history
-    chat_container = st.container(height=300)
+    chat_container = st.container(height=350)
     with chat_container:
         if not st.session_state.chat_messages:
             st.markdown("""
-            **Hello! I'm your AI Financial Planner.**
+**Hello! I'm your AI Financial Planner.**
 
-            I can help you:
-            - Create portfolios based on your risk tolerance
-            - Add specific stocks (e.g., "Add Tesla to my portfolio")
-            - Analyze and rebalance your holdings
-            - Check market conditions
+I can help you:
+- Create portfolios based on your risk tolerance
+- Add specific stocks (e.g., "Add Tesla")
+- Analyze and rebalance your holdings
+- Check market conditions
 
-            **Just tell me what you need in plain English!**
+**Just tell me what you need!**
 
-            *Example: "I'm scared of risk, want mostly treasury and some Tesla stock. I have $1 million to invest."*
-            """)
+*Try: "I'm scared of risk, want mostly treasury and some Tesla. I have $1 million."*
+""")
         else:
             for msg in st.session_state.chat_messages:
                 if msg["role"] == "user":
@@ -2163,20 +2447,16 @@ with st.sidebar:
                             "content": "I don't have a pending portfolio to add. Tell me about your investment goals first!"
                         })
                 else:
-                    # Generate AI response using OpenAI agent
-                    if OPENAI_AVAILABLE and st.session_state.get("openai_api_key"):
-                        response = OpenAIFinancialAgent.chat(
-                            user_input,
-                            st.session_state.chat_messages
-                        )
-                    else:
-                        # Fallback to rule-based
-                        response, portfolio, updated_profile = FinancialPlannerAI.generate_response(
-                            user_input, st.session_state.user_profile
-                        )
-                        st.session_state.user_profile = updated_profile
-                        if portfolio:
-                            st.session_state.pending_portfolio = portfolio
+                    # Generate AI response using SmartFinancialAgent (100% FREE)
+                    response = SmartFinancialAgent.chat(
+                        user_input,
+                        st.session_state.chat_messages
+                    )
+
+                    # Check if there's a pending portfolio from the action
+                    if st.session_state.get("pending_portfolio"):
+                        # Portfolio was created by SmartFinancialAgent
+                        pass
 
                     st.session_state.chat_messages.append({"role": "assistant", "content": response})
 
@@ -2204,12 +2484,7 @@ with st.sidebar:
         if st.button("Conservative", use_container_width=True, key="q_cons"):
             msg = "I'm a very conservative investor with $100,000 budget. Create a safe portfolio for me."
             st.session_state.chat_messages.append({"role": "user", "content": msg})
-            if OPENAI_AVAILABLE and st.session_state.get("openai_api_key"):
-                response = OpenAIFinancialAgent.chat(msg, st.session_state.chat_messages)
-            else:
-                response, portfolio, _ = FinancialPlannerAI.generate_response(msg, st.session_state.user_profile)
-                if portfolio:
-                    st.session_state.pending_portfolio = portfolio
+            response = SmartFinancialAgent.chat(msg, st.session_state.chat_messages)
             st.session_state.chat_messages.append({"role": "assistant", "content": response})
             st.rerun()
 
@@ -2217,12 +2492,7 @@ with st.sidebar:
         if st.button("Aggressive", use_container_width=True, key="q_agg"):
             msg = "I'm an aggressive investor with $100,000 budget. I want high growth potential."
             st.session_state.chat_messages.append({"role": "user", "content": msg})
-            if OPENAI_AVAILABLE and st.session_state.get("openai_api_key"):
-                response = OpenAIFinancialAgent.chat(msg, st.session_state.chat_messages)
-            else:
-                response, portfolio, _ = FinancialPlannerAI.generate_response(msg, st.session_state.user_profile)
-                if portfolio:
-                    st.session_state.pending_portfolio = portfolio
+            response = SmartFinancialAgent.chat(msg, st.session_state.chat_messages)
             st.session_state.chat_messages.append({"role": "assistant", "content": response})
             st.rerun()
 
