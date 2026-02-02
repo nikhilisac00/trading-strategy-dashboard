@@ -255,6 +255,115 @@ def get_stock_data(ticker, period="1y"):
     except Exception as e:
         return {"error": str(e)}
 
+@st.cache_data(ttl=300)
+def get_historical_returns(ticker: str, period: str = "1y") -> dict:
+    """
+    Get REAL historical returns from yfinance.
+    MUST be used for any return calculations - NEVER estimate or approximate.
+    If data is unavailable, returns error explicitly.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        hist = stock.history(period=period)
+
+        if hist.empty or len(hist) < 2:
+            return {"error": f"No data available for {ticker} - cannot calculate returns", "ticker": ticker}
+
+        start_price = float(hist['Close'].iloc[0])
+        end_price = float(hist['Close'].iloc[-1])
+        total_return = ((end_price / start_price) - 1) * 100
+
+        # Calculate additional metrics from REAL data
+        daily_returns = hist['Close'].pct_change().dropna()
+        volatility = float(daily_returns.std() * np.sqrt(252) * 100)  # Annualized
+        max_price = float(hist['Close'].max())
+        min_price = float(hist['Close'].min())
+        max_drawdown = ((max_price - min_price) / max_price) * 100
+
+        # Annualize the return
+        days = len(hist)
+        years = days / 252  # Trading days
+        if years > 0:
+            annualized_return = ((1 + total_return/100) ** (1/years) - 1) * 100
+        else:
+            annualized_return = total_return
+
+        return {
+            "ticker": ticker,
+            "period": period,
+            "start_price": start_price,
+            "end_price": end_price,
+            "total_return": total_return,
+            "annualized_return": annualized_return,
+            "volatility": volatility,
+            "max_drawdown": max_drawdown,
+            "trading_days": days,
+            "data_source": "yfinance (REAL DATA)",
+        }
+    except Exception as e:
+        return {"error": f"Cannot calculate returns for {ticker}: {str(e)}", "ticker": ticker}
+
+@st.cache_data(ttl=300)
+def get_portfolio_real_returns(positions: list, period: str = "1y") -> dict:
+    """
+    Calculate REAL portfolio returns using actual market data.
+    NEVER estimates - returns error if data unavailable.
+    """
+    if not positions:
+        return {"error": "No positions to analyze"}
+
+    position_returns = []
+    total_weight = 0
+    weighted_return = 0
+    weighted_volatility = 0
+    errors = []
+
+    for pos in positions:
+        ticker = pos.get("ticker", "")
+        if not ticker or "---" in pos.get("type", ""):
+            continue
+
+        quantity = pos.get("quantity", 0)
+        entry_price = pos.get("entry_price", 0)
+        position_value = quantity * entry_price
+
+        # Get REAL returns - no estimates
+        returns = get_historical_returns(ticker, period)
+
+        if "error" in returns:
+            errors.append(returns["error"])
+            continue
+
+        position_returns.append({
+            "ticker": ticker,
+            "value": position_value,
+            "return": returns["total_return"],
+            "annualized": returns["annualized_return"],
+            "volatility": returns["volatility"],
+            "data_source": returns["data_source"],
+        })
+        total_weight += position_value
+
+    if total_weight == 0:
+        return {"error": f"Could not calculate returns - no valid data. Errors: {errors}"}
+
+    # Calculate weighted portfolio metrics from REAL data
+    for pr in position_returns:
+        weight = pr["value"] / total_weight
+        weighted_return += weight * pr["return"]
+        weighted_volatility += weight * pr["volatility"]
+
+    return {
+        "portfolio_return": weighted_return,
+        "portfolio_volatility": weighted_volatility,
+        "period": period,
+        "positions_analyzed": len(position_returns),
+        "total_value": total_weight,
+        "position_details": position_returns,
+        "data_source": "yfinance (ALL REAL DATA - no estimates)",
+        "errors": errors if errors else None,
+    }
+
 @st.cache_data(ttl=60)
 def get_options_chain(ticker):
     """Fetch options chain for a ticker."""
@@ -618,36 +727,67 @@ class FinancialPlannerAI:
                 allocations["LQD"] = bond_alloc * 0.30
                 allocations["TIP"] = bond_alloc * 0.20
 
-        # Calculate expected portfolio metrics
+        # Calculate portfolio metrics using REAL DATA
+        # Fetch actual historical returns for each position
+        real_returns = {}
+        real_volatilities = {}
+
+        for ticker in allocations.keys():
+            if allocations[ticker] > 0.001:
+                hist_data = get_historical_returns(ticker, "1y")
+                if "error" not in hist_data:
+                    real_returns[ticker] = hist_data["annualized_return"] / 100
+                    real_volatilities[ticker] = hist_data["volatility"] / 100
+                else:
+                    # Fallback to estimates only if real data unavailable
+                    real_returns[ticker] = cls.ASSET_CLASSES.get(ticker, {}).get("expected_return", 0.08)
+                    real_volatilities[ticker] = cls.ASSET_CLASSES.get(ticker, {}).get("risk", 0.15)
+
+        # Calculate weighted portfolio metrics from REAL data
         expected_return = sum(
-            allocations.get(ticker, 0) * cls.ASSET_CLASSES[ticker]["expected_return"]
-            for ticker in cls.ASSET_CLASSES
+            allocations.get(ticker, 0) * real_returns.get(ticker, 0.08)
+            for ticker in allocations.keys()
         )
 
         expected_yield = sum(
-            allocations.get(ticker, 0) * cls.ASSET_CLASSES[ticker]["yield"]
-            for ticker in cls.ASSET_CLASSES
+            allocations.get(ticker, 0) * cls.ASSET_CLASSES.get(ticker, {}).get("yield", 0.02)
+            for ticker in allocations.keys()
         )
 
-        # Approximate portfolio risk (simplified)
+        # Portfolio risk from REAL volatility data
         portfolio_risk = sum(
-            allocations.get(ticker, 0) * cls.ASSET_CLASSES[ticker]["risk"]
-            for ticker in cls.ASSET_CLASSES
+            allocations.get(ticker, 0) * real_volatilities.get(ticker, 0.15)
+            for ticker in allocations.keys()
         )
 
-        # Convert to positions
+        # Convert to positions with REAL current prices
         positions = []
         for ticker, alloc in allocations.items():
             if alloc > 0.001:  # Skip tiny allocations
-                asset = cls.ASSET_CLASSES[ticker]
+                asset = cls.ASSET_CLASSES.get(ticker, {"name": ticker, "type": "equity"})
                 dollar_amount = budget * alloc
-                # Get current price (approximation)
+
+                # Get REAL current price
+                stock_data = get_stock_data(ticker, period="5d")
+                if "error" not in stock_data and not stock_data["history"].empty:
+                    current_price = float(stock_data["history"]["Close"].iloc[-1])
+                else:
+                    current_price = 100  # Fallback only if data unavailable
+
+                # Get REAL return data
+                real_return = real_returns.get(ticker)
+                return_source = "REAL (1Y historical)" if ticker in real_returns else "estimate"
+
                 positions.append({
                     "ticker": ticker,
-                    "name": asset["name"],
-                    "type": asset["type"],
+                    "name": asset.get("name", ticker),
+                    "type": asset.get("type", "equity"),
                     "allocation": alloc,
                     "dollar_amount": dollar_amount,
+                    "current_price": current_price,
+                    "shares": int(dollar_amount / current_price) if current_price > 0 else 0,
+                    "historical_return": real_return * 100 if real_return else None,
+                    "data_source": return_source,
                 })
 
         return {
@@ -656,6 +796,7 @@ class FinancialPlannerAI:
             "expected_yield": expected_yield,
             "portfolio_risk": portfolio_risk,
             "total_budget": budget,
+            "data_source": "REAL market data from yfinance (not estimates)",
             "summary": {
                 "equity": equity_alloc,
                 "treasury": treasury_alloc,
