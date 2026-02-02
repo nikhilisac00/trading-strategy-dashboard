@@ -604,6 +604,44 @@ class FinancialPlannerAI:
         "very_aggressive": {"min": 1.2, "max": 2.0, "target": 1.5},
     }
 
+    # Bond ETF risk metrics: duration (interest rate sensitivity), convexity, spread duration (credit)
+    # Duration = approx % price change for 1% rate move
+    BOND_RISK_DATA = {
+        # Treasury ETFs (no credit risk, only duration risk)
+        "TLT": {"duration": 17.5, "convexity": 3.8, "spread_duration": 0, "type": "treasury", "maturity": "20+ yr"},
+        "IEF": {"duration": 7.5, "convexity": 0.7, "spread_duration": 0, "type": "treasury", "maturity": "7-10 yr"},
+        "IEI": {"duration": 4.5, "convexity": 0.3, "spread_duration": 0, "type": "treasury", "maturity": "3-7 yr"},
+        "SHY": {"duration": 1.9, "convexity": 0.05, "spread_duration": 0, "type": "treasury", "maturity": "1-3 yr"},
+        "GOVT": {"duration": 6.2, "convexity": 0.5, "spread_duration": 0, "type": "treasury", "maturity": "mixed"},
+        "TIP": {"duration": 6.8, "convexity": 0.6, "spread_duration": 0, "type": "tips", "maturity": "mixed"},
+        # Corporate bond ETFs (duration + credit/spread risk)
+        "LQD": {"duration": 8.5, "convexity": 1.0, "spread_duration": 8.2, "type": "investment_grade", "maturity": "mixed"},
+        "VCIT": {"duration": 6.2, "convexity": 0.5, "spread_duration": 6.0, "type": "investment_grade", "maturity": "5-10 yr"},
+        "VCSH": {"duration": 2.7, "convexity": 0.1, "spread_duration": 2.5, "type": "investment_grade", "maturity": "1-5 yr"},
+        # High yield (higher spread duration = more credit sensitive)
+        "HYG": {"duration": 3.8, "convexity": 0.2, "spread_duration": 3.6, "type": "high_yield", "maturity": "mixed"},
+        "JNK": {"duration": 3.5, "convexity": 0.2, "spread_duration": 3.4, "type": "high_yield", "maturity": "mixed"},
+        # Aggregate
+        "BND": {"duration": 6.3, "convexity": 0.6, "spread_duration": 2.1, "type": "aggregate", "maturity": "mixed"},
+        "AGG": {"duration": 6.2, "convexity": 0.5, "spread_duration": 2.0, "type": "aggregate", "maturity": "mixed"},
+    }
+
+    # Target portfolio volatility by risk profile (annualized %)
+    VOLATILITY_TARGETS = {
+        "conservative": {"min": 5, "max": 8, "target": 6},
+        "moderate": {"min": 8, "max": 12, "target": 10},
+        "aggressive": {"min": 12, "max": 18, "target": 15},
+        "very_aggressive": {"min": 15, "max": 25, "target": 20},
+    }
+
+    # Duration targets by risk profile (weighted avg years)
+    DURATION_TARGETS = {
+        "conservative": {"min": 2, "max": 5, "target": 3.5},
+        "moderate": {"min": 4, "max": 7, "target": 5.5},
+        "aggressive": {"min": 5, "max": 10, "target": 7},
+        "very_aggressive": {"min": 6, "max": 12, "target": 8},
+    }
+
     @classmethod
     def get_stock_beta(cls, ticker: str) -> float:
         """Get REAL beta for a stock from yfinance."""
@@ -616,6 +654,93 @@ class FinancialPlannerAI:
             return 1.0  # Default to market beta if unavailable
         except:
             return 1.0
+
+    @classmethod
+    def get_bond_risk_metrics(cls, ticker: str) -> dict:
+        """Get duration, convexity, and spread duration for bond ETFs."""
+        ticker_upper = ticker.upper()
+        if ticker_upper in cls.BOND_RISK_DATA:
+            return cls.BOND_RISK_DATA[ticker_upper]
+        # Default for unknown bonds - estimate based on name/type
+        return {"duration": 5.0, "convexity": 0.4, "spread_duration": 2.0, "type": "unknown", "maturity": "unknown"}
+
+    @classmethod
+    def is_bond_etf(cls, ticker: str) -> bool:
+        """Check if ticker is a bond ETF."""
+        bond_tickers = list(cls.BOND_RISK_DATA.keys())
+        return ticker.upper() in bond_tickers
+
+    @classmethod
+    def calculate_portfolio_duration(cls, positions: list) -> dict:
+        """Calculate weighted average duration and spread duration for fixed income."""
+        bond_value = 0
+        weighted_duration = 0
+        weighted_spread_duration = 0
+        weighted_convexity = 0
+
+        for pos in positions:
+            ticker = pos.get("ticker", "").upper()
+            if not cls.is_bond_etf(ticker):
+                continue
+
+            quantity = pos.get("quantity", 0)
+            entry_price = pos.get("entry_price", 100)
+            value = quantity * entry_price
+
+            metrics = cls.get_bond_risk_metrics(ticker)
+            weighted_duration += value * metrics["duration"]
+            weighted_spread_duration += value * metrics["spread_duration"]
+            weighted_convexity += value * metrics["convexity"]
+            bond_value += value
+
+        if bond_value > 0:
+            return {
+                "duration": weighted_duration / bond_value,
+                "spread_duration": weighted_spread_duration / bond_value,
+                "convexity": weighted_convexity / bond_value,
+                "bond_value": bond_value,
+            }
+        return {"duration": 0, "spread_duration": 0, "convexity": 0, "bond_value": 0}
+
+    @classmethod
+    def estimate_portfolio_volatility(cls, positions: list) -> float:
+        """Estimate annualized portfolio volatility using position data."""
+        if not positions:
+            return 0
+
+        # Get historical returns for each position
+        total_value = 0
+        weighted_var = 0
+
+        for pos in positions:
+            ticker = pos.get("ticker", "")
+            if not ticker:
+                continue
+
+            quantity = pos.get("quantity", 0)
+            entry_price = pos.get("entry_price", 100)
+            value = quantity * entry_price
+            total_value += value
+
+            try:
+                stock = yf.Ticker(ticker)
+                hist = stock.history(period="1y")
+                if not hist.empty and len(hist) > 20:
+                    returns = hist['Close'].pct_change().dropna()
+                    vol = float(returns.std() * np.sqrt(252) * 100)  # Annualized %
+                    weighted_var += (value ** 2) * (vol ** 2)
+            except:
+                # Default volatility estimate
+                if cls.is_bond_etf(ticker):
+                    weighted_var += (value ** 2) * (5 ** 2)  # ~5% for bonds
+                else:
+                    weighted_var += (value ** 2) * (20 ** 2)  # ~20% for stocks
+
+        if total_value > 0:
+            # Simplified - assumes no correlation (conservative estimate)
+            portfolio_vol = np.sqrt(weighted_var) / total_value
+            return portfolio_vol
+        return 0
 
     @classmethod
     def get_stock_info_for_portfolio(cls, ticker: str) -> dict:
@@ -996,27 +1121,77 @@ class FinancialPlannerAI:
             "bond": allocation_by_type["bond"] / total_value if total_value > 0 else 0,
         }
 
-        # Get target allocation based on user profile (simplified)
+        # Get user risk profile
+        risk_level = st.session_state.user_profile.get("risk_level", "moderate")
+
+        # Calculate EQUITY risk metrics (Beta-based)
+        equity_beta = cls.calculate_portfolio_beta(positions)
+        beta_target = cls.BETA_TARGETS.get(risk_level, cls.BETA_TARGETS["moderate"])
+
+        # Calculate FIXED INCOME risk metrics (Duration-based)
+        duration_metrics = cls.calculate_portfolio_duration(positions)
+        duration_target = cls.DURATION_TARGETS.get(risk_level, cls.DURATION_TARGETS["moderate"])
+
+        # Estimate portfolio volatility (cross-asset risk budget)
+        portfolio_vol = cls.estimate_portfolio_volatility(positions)
+        vol_target = cls.VOLATILITY_TARGETS.get(risk_level, cls.VOLATILITY_TARGETS["moderate"])
+
         suggestions = []
         needs_rebalancing = False
 
-        # Check for concentration issues
+        # === EQUITY RISK ANALYSIS (Beta) ===
+        if current_allocation["equity"] > 0.1:
+            if equity_beta < beta_target["min"]:
+                suggestions.append(f"**Equity Beta** ({equity_beta:.2f}) is below target ({beta_target['min']:.1f}-{beta_target['max']:.1f}). Consider higher-beta growth stocks for your {risk_level} profile.")
+                needs_rebalancing = True
+            elif equity_beta > beta_target["max"]:
+                suggestions.append(f"**Equity Beta** ({equity_beta:.2f}) exceeds target ({beta_target['min']:.1f}-{beta_target['max']:.1f}). Consider defensive stocks or reduce equity exposure.")
+                needs_rebalancing = True
+
+        # === FIXED INCOME RISK ANALYSIS (Duration) ===
+        if duration_metrics["bond_value"] > 0:
+            port_duration = duration_metrics["duration"]
+            spread_duration = duration_metrics["spread_duration"]
+
+            # Duration check (interest rate sensitivity)
+            if port_duration > duration_target["max"]:
+                suggestions.append(f"**Bond Duration** ({port_duration:.1f} yrs) exceeds target ({duration_target['max']} yrs). High interest rate sensitivity - consider shorter-duration bonds (SHY, VCSH).")
+                needs_rebalancing = True
+            elif port_duration < duration_target["min"] and current_allocation["treasury"] + current_allocation["bond"] > 0.2:
+                suggestions.append(f"**Bond Duration** ({port_duration:.1f} yrs) is below target ({duration_target['min']} yrs). May sacrifice yield - consider intermediate bonds (IEF, VCIT).")
+                needs_rebalancing = True
+
+            # Spread duration check (credit risk sensitivity)
+            if spread_duration > 5:
+                suggestions.append(f"**Spread Duration** ({spread_duration:.1f}) indicates high credit risk. Consider reducing HYG/JNK exposure or adding treasuries.")
+                needs_rebalancing = True
+
+        # === CROSS-ASSET RISK BUDGET (Volatility) ===
+        if portfolio_vol > 0:
+            if portfolio_vol > vol_target["max"]:
+                suggestions.append(f"**Portfolio Volatility** (~{portfolio_vol:.1f}%) exceeds target ({vol_target['max']}%). Consider rebalancing to bonds/treasuries.")
+                needs_rebalancing = True
+            elif portfolio_vol < vol_target["min"] and risk_level in ["aggressive", "very_aggressive"]:
+                suggestions.append(f"**Portfolio Volatility** (~{portfolio_vol:.1f}%) is below target ({vol_target['min']}%). Portfolio may be too conservative for your goals.")
+                needs_rebalancing = True
+
+        # === CONCENTRATION RISK ===
         for pv in position_values:
             pct = pv["value"] / total_value * 100
             if pct > 30:
                 suggestions.append(f"**{pv['ticker']}** is {pct:.1f}% of portfolio - consider trimming to reduce concentration risk")
                 needs_rebalancing = True
 
-        # Check allocation drift
+        # === ALLOCATION DRIFT ===
         if current_allocation["equity"] > 0.80:
             suggestions.append(f"Equity allocation is {current_allocation['equity']*100:.0f}% - consider adding bonds for diversification")
             needs_rebalancing = True
-        elif current_allocation["equity"] < 0.30:
+        elif current_allocation["equity"] < 0.30 and risk_level not in ["conservative"]:
             suggestions.append(f"Equity allocation is only {current_allocation['equity']*100:.0f}% - consider adding equities for growth")
             needs_rebalancing = True
 
         if current_allocation["treasury"] == 0 and current_allocation["bond"] == 0:
-            suggestions.append("No fixed income exposure - consider adding bonds for stability")
+            suggestions.append("No fixed income exposure - consider adding bonds for stability and income")
             needs_rebalancing = True
 
         return {
@@ -1025,6 +1200,21 @@ class FinancialPlannerAI:
             "current_allocation": current_allocation,
             "total_value": total_value,
             "position_values": position_values,
+            # Risk metrics by asset class
+            "equity_metrics": {
+                "beta": equity_beta,
+                "target_range": f"{beta_target['min']:.1f}-{beta_target['max']:.1f}",
+            },
+            "fixed_income_metrics": {
+                "duration": duration_metrics["duration"],
+                "spread_duration": duration_metrics["spread_duration"],
+                "convexity": duration_metrics["convexity"],
+                "target_duration": f"{duration_target['min']}-{duration_target['max']} yrs",
+            },
+            "portfolio_metrics": {
+                "volatility": portfolio_vol,
+                "target_volatility": f"{vol_target['min']}-{vol_target['max']}%",
+            },
         }
 
     @classmethod
@@ -1179,6 +1369,31 @@ class FinancialPlannerAI:
             response_parts.append(f"- Treasury: {current.get('treasury', 0)*100:.1f}%")
             response_parts.append(f"- Bonds: {current.get('bond', 0)*100:.1f}%")
 
+            # Display risk metrics by asset class
+            response_parts.append("\n### Risk Metrics by Asset Class")
+
+            # Equity metrics (Beta-based)
+            eq_metrics = analysis.get("equity_metrics", {})
+            if current.get('equity', 0) > 0.05:
+                response_parts.append(f"\n**Equities (Beta-based risk):**")
+                response_parts.append(f"- Portfolio Beta: {eq_metrics.get('beta', 1.0):.2f}")
+                response_parts.append(f"- Target Range: {eq_metrics.get('target_range', 'N/A')}")
+
+            # Fixed income metrics (Duration-based)
+            fi_metrics = analysis.get("fixed_income_metrics", {})
+            if current.get('treasury', 0) + current.get('bond', 0) > 0.05:
+                response_parts.append(f"\n**Fixed Income (Duration-based risk):**")
+                response_parts.append(f"- Duration: {fi_metrics.get('duration', 0):.1f} years (interest rate sensitivity)")
+                response_parts.append(f"- Spread Duration: {fi_metrics.get('spread_duration', 0):.1f} (credit risk sensitivity)")
+                response_parts.append(f"- Convexity: {fi_metrics.get('convexity', 0):.2f}")
+                response_parts.append(f"- Target Duration: {fi_metrics.get('target_duration', 'N/A')}")
+
+            # Portfolio-level metrics
+            port_metrics = analysis.get("portfolio_metrics", {})
+            response_parts.append(f"\n**Cross-Asset Risk Budget:**")
+            response_parts.append(f"- Est. Portfolio Volatility: {port_metrics.get('volatility', 0):.1f}%")
+            response_parts.append(f"- Target Volatility: {port_metrics.get('target_volatility', 'N/A')}")
+
             if analysis["needs_rebalancing"]:
                 response_parts.append("\n### Rebalancing Suggestions")
                 for suggestion in analysis["suggestions"]:
@@ -1187,7 +1402,7 @@ class FinancialPlannerAI:
                 response_parts.append("\n**Say 'execute rebalancing' or 'rebalance now' to implement these changes.**")
                 st.session_state.pending_rebalancing = analysis
             else:
-                response_parts.append("\n✅ **Your portfolio looks well-balanced!** No rebalancing needed at this time.")
+                response_parts.append("\n**Your portfolio is well-balanced!** No rebalancing needed at this time.")
 
             return "\n".join(response_parts), None, user_profile
 
