@@ -596,6 +596,80 @@ class FinancialPlannerAI:
         },
     }
 
+    # Risk profiles linked to target Beta
+    BETA_TARGETS = {
+        "conservative": {"min": 0.3, "max": 0.6, "target": 0.5},
+        "moderate": {"min": 0.6, "max": 0.9, "target": 0.75},
+        "aggressive": {"min": 0.9, "max": 1.3, "target": 1.1},
+        "very_aggressive": {"min": 1.2, "max": 2.0, "target": 1.5},
+    }
+
+    @classmethod
+    def get_stock_beta(cls, ticker: str) -> float:
+        """Get REAL beta for a stock from yfinance."""
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            beta = info.get("beta", None)
+            if beta is not None:
+                return float(beta)
+            return 1.0  # Default to market beta if unavailable
+        except:
+            return 1.0
+
+    @classmethod
+    def get_stock_info_for_portfolio(cls, ticker: str) -> dict:
+        """Get comprehensive stock info for adding to portfolio."""
+        try:
+            stock = yf.Ticker(ticker)
+            info = stock.info
+            hist = stock.history(period="5d")
+
+            current_price = float(hist['Close'].iloc[-1]) if not hist.empty else info.get("currentPrice", 100)
+
+            return {
+                "ticker": ticker.upper(),
+                "name": info.get("shortName", info.get("longName", ticker)),
+                "current_price": current_price,
+                "beta": info.get("beta", 1.0),
+                "sector": info.get("sector", "Unknown"),
+                "industry": info.get("industry", "Unknown"),
+                "market_cap": info.get("marketCap", 0),
+                "dividend_yield": info.get("dividendYield", 0) or 0,
+                "pe_ratio": info.get("trailingPE", None),
+                "52w_high": info.get("fiftyTwoWeekHigh", None),
+                "52w_low": info.get("fiftyTwoWeekLow", None),
+                "error": None
+            }
+        except Exception as e:
+            return {"ticker": ticker.upper(), "error": str(e)}
+
+    @classmethod
+    def calculate_portfolio_beta(cls, positions: list) -> float:
+        """Calculate weighted average Beta of portfolio."""
+        if not positions:
+            return 1.0
+
+        total_value = 0
+        weighted_beta = 0
+
+        for pos in positions:
+            ticker = pos.get("ticker", "")
+            if not ticker:
+                continue
+
+            quantity = pos.get("quantity", 0)
+            entry_price = pos.get("entry_price", 100)
+            value = quantity * entry_price
+
+            beta = cls.get_stock_beta(ticker)
+            weighted_beta += value * beta
+            total_value += value
+
+        if total_value > 0:
+            return weighted_beta / total_value
+        return 1.0
+
     @classmethod
     def parse_user_input(cls, message: str) -> dict:
         """Parse user message to extract requirements."""
@@ -607,7 +681,59 @@ class FinancialPlannerAI:
             "treasury_constraint": None,
             "equity_constraint": None,
             "bond_constraint": None,
+            "specific_stocks": [],  # New: specific stocks to add
+            "action": None,  # New: add, remove, etc.
+            "amount": None,  # New: dollar amount for specific stock
+            "shares": None,  # New: number of shares
         }
+
+        # Detect specific stock ticker requests
+        import re
+        # Look for "add AAPL" or "buy AAPL" or "AAPL stock" patterns
+        # Using case-insensitive flag
+        stock_patterns = [
+            r'\b(?:add|buy|purchase|get|include)\s+(\$?[A-Z]{1,5})\b',
+            r'\b([A-Z]{1,5})\s+(?:stock|shares|position)\b',
+            r'\bI\s+(?:want|like|prefer)\s+(\$?[A-Z]{1,5})\b',
+            r'\b(?:add|buy)\s+(?:\$?[\d,]+\s+(?:of|worth|in)\s+)?([A-Z]{1,5})\b',
+            r'\b(?:of|in|worth\s+of)\s+([A-Z]{1,5})\b',  # "$5000 of TSLA"
+        ]
+
+        message_upper = message.upper()
+        found_tickers = set()
+        for pattern in stock_patterns:
+            matches = re.findall(pattern, message_upper, re.IGNORECASE)
+            for match in matches:
+                ticker = match.replace("$", "").strip()
+                # Validate it looks like a ticker (not common words)
+                if ticker and len(ticker) <= 5 and ticker not in ["I", "A", "THE", "AND", "FOR", "ADD", "BUY", "GET", "MY", "TO", "IN", "OF", "WORTH"]:
+                    found_tickers.add(ticker)
+        parsed["specific_stocks"] = list(found_tickers)
+
+        # Detect dollar amount for specific stock - multiple patterns
+        # Pattern 1: "$5000 of AAPL" or "$5,000 worth of AAPL"
+        amount_match = re.search(r'\$\s*([\d,]+(?:\.\d{2})?)\s*(?:of|worth|in)?', message, re.IGNORECASE)
+        if amount_match:
+            parsed["amount"] = float(amount_match.group(1).replace(',', ''))
+        # Pattern 2: "buy 5000 worth of AAPL" without $ sign
+        if not parsed["amount"]:
+            amount_match2 = re.search(r'(\d+(?:,\d{3})*)\s*(?:dollars?|worth|of)\s+', message, re.IGNORECASE)
+            if amount_match2:
+                parsed["amount"] = float(amount_match2.group(1).replace(',', ''))
+
+        # Detect number of shares - "10 shares of NVDA" or "add 10 shares AAPL"
+        shares_match = re.search(r'(\d+)\s+shares?\s+(?:of\s+)?([A-Z]{1,5})', message, re.IGNORECASE)
+        if shares_match:
+            parsed["shares"] = int(shares_match.group(1))
+            ticker = shares_match.group(2)
+            if ticker not in parsed["specific_stocks"]:
+                parsed["specific_stocks"].append(ticker)
+
+        # Detect action type
+        if any(word in message_lower for word in ["add", "buy", "purchase", "get", "include"]):
+            parsed["action"] = "add"
+        elif any(word in message_lower for word in ["remove", "sell", "drop", "delete"]):
+            parsed["action"] = "remove"
 
         # Detect risk level
         if any(word in message_lower for word in ["very risky", "very aggressive", "high risk", "maximum risk", "yolo"]):
@@ -936,6 +1062,106 @@ class FinancialPlannerAI:
         parsed = cls.parse_user_input(user_message)
         message_lower = user_message.lower()
 
+        # Handle specific stock additions (e.g., "add AAPL")
+        if parsed["specific_stocks"] and parsed["action"] == "add":
+            response_parts = []
+            added_stocks = []
+
+            for ticker in parsed["specific_stocks"]:
+                stock_info = cls.get_stock_info_for_portfolio(ticker)
+
+                if stock_info.get("error"):
+                    response_parts.append(f"Could not find **{ticker}** - {stock_info['error']}")
+                    continue
+
+                # Determine quantity
+                if parsed["shares"]:
+                    quantity = parsed["shares"]
+                elif parsed["amount"]:
+                    quantity = int(parsed["amount"] / stock_info["current_price"])
+                else:
+                    # Default: buy shares worth roughly $1000 or 10 shares
+                    quantity = max(1, int(1000 / stock_info["current_price"]))
+
+                if quantity > 0:
+                    position = {
+                        "ticker": stock_info["ticker"],
+                        "type": "Stock",
+                        "side": "Long",
+                        "quantity": quantity,
+                        "entry_price": stock_info["current_price"],
+                        "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                        "strike": None,
+                        "expiry": None,
+                        "yield_rate": None,
+                        "maturity": None,
+                        "id": len(st.session_state.portfolio)
+                    }
+                    st.session_state.portfolio.append(position)
+                    added_stocks.append({
+                        "ticker": stock_info["ticker"],
+                        "name": stock_info["name"],
+                        "quantity": quantity,
+                        "price": stock_info["current_price"],
+                        "beta": stock_info["beta"],
+                        "sector": stock_info["sector"],
+                    })
+
+            if added_stocks:
+                response_parts.append("## Stock Added to Portfolio\n")
+                for stock in added_stocks:
+                    value = stock["quantity"] * stock["price"]
+                    response_parts.append(f"**{stock['ticker']}** ({stock['name']})")
+                    response_parts.append(f"- Shares: {stock['quantity']} @ ${stock['price']:.2f} = ${value:,.2f}")
+                    response_parts.append(f"- Beta: {stock['beta']:.2f}")
+                    response_parts.append(f"- Sector: {stock['sector']}")
+                    response_parts.append("")
+
+                # Calculate and report portfolio Beta
+                portfolio_beta = cls.calculate_portfolio_beta(st.session_state.portfolio)
+                risk_level = user_profile.get("risk_level", "moderate")
+                beta_target = cls.BETA_TARGETS.get(risk_level, cls.BETA_TARGETS["moderate"])
+
+                response_parts.append(f"### Portfolio Risk Analysis")
+                response_parts.append(f"**Current Portfolio Beta:** {portfolio_beta:.2f}")
+                response_parts.append(f"**Target Beta Range ({risk_level}):** {beta_target['min']:.1f} - {beta_target['max']:.1f}")
+
+                if portfolio_beta < beta_target["min"]:
+                    response_parts.append(f"\n*Your portfolio Beta is below target. Consider adding higher-beta growth stocks to match your {risk_level} profile.*")
+                elif portfolio_beta > beta_target["max"]:
+                    response_parts.append(f"\n*Your portfolio Beta is above target. Consider adding defensive stocks or bonds to reduce volatility.*")
+                else:
+                    response_parts.append(f"\n*Your portfolio Beta is within the target range for your {risk_level} profile.*")
+
+                response_parts.append("\nCheck the **Portfolio** tab to see your updated holdings.")
+
+            return "\n".join(response_parts), None, user_profile
+
+        # Handle specific stock removals
+        if parsed["specific_stocks"] and parsed["action"] == "remove":
+            response_parts = []
+            removed = []
+
+            for ticker in parsed["specific_stocks"]:
+                ticker_upper = ticker.upper()
+                # Find and remove matching positions
+                initial_count = len(st.session_state.portfolio)
+                st.session_state.portfolio = [
+                    p for p in st.session_state.portfolio
+                    if p.get("ticker", "").upper() != ticker_upper
+                ]
+                if len(st.session_state.portfolio) < initial_count:
+                    removed.append(ticker_upper)
+
+            if removed:
+                response_parts.append(f"Removed **{', '.join(removed)}** from your portfolio.")
+                portfolio_beta = cls.calculate_portfolio_beta(st.session_state.portfolio)
+                response_parts.append(f"\n**New Portfolio Beta:** {portfolio_beta:.2f}")
+            else:
+                response_parts.append(f"Could not find {', '.join(parsed['specific_stocks'])} in your portfolio.")
+
+            return "\n".join(response_parts), None, user_profile
+
         # Check for rebalancing request
         if any(word in message_lower for word in ["rebalance", "rebalancing", "adjust", "optimize portfolio"]):
             portfolio_positions = st.session_state.get("portfolio", [])
@@ -1095,7 +1321,7 @@ with st.sidebar:
     with chat_container:
         if not st.session_state.chat_messages:
             st.markdown("""
-            👋 **Hello! I'm your AI Financial Planner.**
+            **Hello! I'm your AI Financial Planner.**
 
             Tell me about:
             - Your **risk tolerance** (conservative, moderate, aggressive)
@@ -1103,7 +1329,12 @@ with st.sidebar:
             - Any **allocation constraints** (e.g., 2% in treasury)
             - Your **investment budget**
 
-            *Example: "I'm an aggressive investor with $50K looking for 10% returns with only 5% in treasury"*
+            **Or add specific stocks:**
+            - "Add AAPL to my portfolio"
+            - "Buy $5000 of MSFT"
+            - "Add 10 shares of TSLA"
+
+            *I track portfolio Beta to match your risk profile.*
             """)
         else:
             for msg in st.session_state.chat_messages:
@@ -2274,5 +2505,6 @@ with tab6:
 # ============================================================
 
 st.markdown("---")
-st.caption(f"Dashboard v2 | Risk Profile: {risk_profile} | VIX Regime: {vix_regime} | Curve: {curve_regime} | Budget: ${st.session_state.user_profile.get('budget', 0):,.0f}")
+budget_display = st.session_state.user_profile.get('budget') or 0
+st.caption(f"Dashboard v2 | Risk Profile: {risk_profile} | VIX Regime: {vix_regime} | Curve: {curve_regime} | Budget: ${budget_display:,.0f}")
 st.caption("For educational purposes only. Not financial advice.")
