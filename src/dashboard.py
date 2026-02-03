@@ -3844,15 +3844,73 @@ with tab4:
             # Check if portfolio matches user preference
             risk_match = actual_risk_label.lower().replace(" ", "_") == user_risk_level or actual_risk_label == user_risk_display
 
+            # Custom Beta Target Selection
+            st.markdown("##### Set Custom Beta Target")
+            beta_col1, beta_col2, beta_col3 = st.columns([2, 1, 1])
+
+            with beta_col1:
+                target_beta = st.slider(
+                    "Target Portfolio Beta:",
+                    min_value=0.1,
+                    max_value=1.5,
+                    value=portfolio_beta if portfolio_beta > 0.1 else 0.7,
+                    step=0.05,
+                    help="0.1-0.3: Very Conservative | 0.3-0.55: Conservative | 0.55-0.85: Moderate | 0.85-1.05: Aggressive | 1.05+: Very Aggressive"
+                )
+
+            with beta_col2:
+                # Show what risk level the target beta corresponds to
+                if target_beta < 0.3:
+                    target_label = "🛡️ V.Cons"
+                elif target_beta < 0.55:
+                    target_label = "🌿 Cons"
+                elif target_beta < 0.85:
+                    target_label = "⚖️ Mod"
+                elif target_beta < 1.05:
+                    target_label = "🔥 Aggr"
+                else:
+                    target_label = "🚀 V.Aggr"
+                st.metric("Target Level", target_label)
+
+            with beta_col3:
+                if st.button("🎯 Set Beta Target", key="set_custom_beta", use_container_width=True):
+                    # Map beta to risk level for portfolio generation
+                    if target_beta < 0.3:
+                        new_risk = "very_conservative"
+                    elif target_beta < 0.55:
+                        new_risk = "conservative"
+                    elif target_beta < 0.85:
+                        new_risk = "moderate"
+                    elif target_beta < 1.05:
+                        new_risk = "aggressive"
+                    else:
+                        new_risk = "very_aggressive"
+
+                    # Update user profile
+                    if "user_profile" not in st.session_state or not st.session_state.user_profile:
+                        st.session_state.user_profile = {"constraints": {}}
+                    st.session_state.user_profile["risk_level"] = new_risk
+                    st.session_state.user_profile["target_beta"] = target_beta
+                    st.success(f"Target beta set to {target_beta:.2f} ({new_risk.replace('_', ' ').title()})")
+                    st.rerun()
+
+            st.markdown("---")
+
             risk_col1, risk_col2, risk_col3 = st.columns(3)
 
             with risk_col1:
                 st.markdown("##### Your Selected Risk Profile")
-                st.metric(
-                    "Target Risk",
-                    f"{user_risk_emoji} {user_risk_display}",
-                )
-                st.caption("Based on your stated preference")
+                # Show custom beta if set
+                custom_beta = st.session_state.user_profile.get("target_beta") if st.session_state.user_profile else None
+                if custom_beta:
+                    st.metric("Target Beta", f"{custom_beta:.2f}")
+                    st.caption(f"Custom target → {user_risk_display}")
+                else:
+                    st.metric(
+                        "Target Risk",
+                        f"{user_risk_emoji} {user_risk_display}",
+                    )
+                    st.caption("Based on your stated preference")
 
             with risk_col2:
                 st.markdown("##### Actual Portfolio Risk")
