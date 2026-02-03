@@ -2071,18 +2071,29 @@ class SmartFinancialAgent:
         """Detect risk level from text with confidence score."""
         text_lower = text.lower()
 
-        # PRIORITY 1: Check for exact word "moderate", "conservative", "aggressive" first
+        # PRIORITY 0: Check for fear/aversion phrases FIRST - these are VERY CONSERVATIVE
+        fear_phrases = [
+            "scared of risk", "scared of losing", "fear risk", "hate risk", "afraid of risk",
+            "terrified", "petrified", "frightened", "anxious about", "worried about losing",
+            "can't afford to lose", "can't handle", "no risk", "zero risk", "avoid risk",
+            "scared", "fearful", "nervous about risk", "risk averse", "risk-averse",
+        ]
+        for phrase in fear_phrases:
+            if phrase in text_lower:
+                return "very_conservative", 0.98
+
+        # PRIORITY 1: Check for exact word "moderate", "conservative", "aggressive"
         # This prevents fuzzy matching from overriding clear intent
+        if "very conservative" in text_lower:
+            return "very_conservative", 0.95
+        if "very aggressive" in text_lower:
+            return "very_aggressive", 0.95
         if "moderate" in text_lower and "very" not in text_lower:
             return "moderate", 0.95
         if "conservative" in text_lower and "very" not in text_lower:
             return "conservative", 0.95
         if "aggressive" in text_lower and "very" not in text_lower:
             return "aggressive", 0.95
-        if "very conservative" in text_lower:
-            return "very_conservative", 0.95
-        if "very aggressive" in text_lower:
-            return "very_aggressive", 0.95
 
         # PRIORITY 2: Check for exact phrase matches
         # Order: most extreme first, then moderate last (as fallback)
@@ -2349,6 +2360,16 @@ class SmartFinancialAgent:
                 treasury_pct = parsed.get("treasury_pct")
                 tickers = parsed.get("tickers", [])
                 return_target = parsed.get("return_target")
+
+                # IMPORTANT: Save the detected risk level to session state for Risk Profile display
+                if "user_profile" not in st.session_state or not st.session_state.user_profile:
+                    st.session_state.user_profile = {"constraints": {}}
+                st.session_state.user_profile["risk_level"] = risk_level
+                st.session_state.user_profile["budget"] = budget
+                if return_target:
+                    st.session_state.user_profile["return_target"] = return_target
+                if treasury_pct:
+                    st.session_state.user_profile["constraints"]["treasury"] = treasury_pct
 
                 portfolio = FinancialPlannerAI.generate_portfolio(
                     risk_level=risk_level,
@@ -3777,9 +3798,19 @@ with tab4:
             with risk_col3:
                 st.markdown("##### Risk Alignment")
                 # Calculate allocation percentages
+                # Note: Treasury/Bond ETFs should NOT count as equity
                 total_val = sum(p["value"] for p in position_values) if position_values else 0
-                equity_val = sum(p["value"] for p in position_values if "Stock" in p.get("type", "") or "ETF" in p.get("type", "")) if position_values else 0
-                bond_val = sum(p["value"] for p in position_values if "Bond" in p.get("type", "") or "Treasury" in p.get("type", "")) if position_values else 0
+
+                equity_val = 0
+                bond_val = 0
+                for p in position_values:
+                    pos_type = p.get("type", "").lower()
+                    val = p["value"]
+                    # Check fixed income FIRST (before ETF check)
+                    if "treasury" in pos_type or "bond" in pos_type:
+                        bond_val += val
+                    elif "stock" in pos_type or "etf" in pos_type:
+                        equity_val += val
 
                 equity_pct = (equity_val / total_val * 100) if total_val > 0 else 0
                 bond_pct = (bond_val / total_val * 100) if total_val > 0 else 0
