@@ -3909,61 +3909,90 @@ with tab4:
                                      for p in st.session_state.portfolio)
                     rebal_budget = rebal_total if rebal_total > 0 else 100000
 
-                    # Get user's individual stocks to keep
-                    current_tickers = [p.get("ticker") for p in st.session_state.portfolio if p.get("ticker")]
-                    algo_tickers = [
-                        "SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "VGT", "IWM", "VIG",
-                        "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG",
-                        "NVDA", "AMD", "TSLA"
-                    ]
-                    user_stocks = [t for t in current_tickers if t not in algo_tickers]
-
-                    # Generate new portfolio matching target beta/risk
-                    new_portfolio = FinancialPlannerAI.generate_portfolio(
-                        risk_level=new_risk,
-                        budget=rebal_budget,
-                        specific_stocks=user_stocks if user_stocks else None
-                    )
-
-                    # Clear and rebuild portfolio
+                    # Clear portfolio for rebuild
                     st.session_state.portfolio = []
-                    for pos in new_portfolio["positions"]:
-                        ticker = pos["ticker"]
-                        dollar_amount = pos.get("dollar_amount", 0)
-                        current_price = pos.get("current_price", 100)
-                        if current_price <= 0:
-                            current_price = 100
-                        quantity = int(dollar_amount / current_price) if current_price > 0 else 0
-                        if quantity > 0:
-                            pos_type = pos.get("type", "equity").lower()
-                            if pos_type == "stock":
-                                display_type = "Stock"
-                            elif pos_type == "treasury":
-                                display_type = "Treasury ETF"
-                            elif pos_type in ["bond", "corporate_bond", "high_yield"]:
-                                display_type = "Bond ETF"
-                            else:
-                                display_type = "ETF"
 
-                            position = {
+                    # Calculate exact equity/bond split to hit target beta
+                    # Formula: target_beta = equity_pct * equity_beta + bond_pct * bond_beta
+                    # Assume: equity_beta ~1.0, bond_beta ~0.08
+                    # Solving: equity_pct = (target_beta - 0.08) / (1.0 - 0.08)
+                    equity_beta_avg = 1.0
+                    bond_beta_avg = 0.08
+
+                    # Clamp target beta to achievable range
+                    clamped_beta = max(0.08, min(1.5, target_beta))
+                    equity_pct = (clamped_beta - bond_beta_avg) / (equity_beta_avg - bond_beta_avg)
+                    equity_pct = max(0.0, min(1.0, equity_pct))  # Clamp 0-100%
+                    bond_pct = 1.0 - equity_pct
+
+                    equity_budget = rebal_budget * equity_pct
+                    bond_budget = rebal_budget * bond_pct
+
+                    # Select ETFs based on target beta level
+                    if target_beta >= 1.05:
+                        # Very aggressive - high beta stocks
+                        equity_etfs = [("QQQ", 0.25), ("NVDA", 0.25), ("AMD", 0.20), ("TSLA", 0.15), ("VGT", 0.15)]
+                    elif target_beta >= 0.85:
+                        # Aggressive
+                        equity_etfs = [("SPY", 0.35), ("QQQ", 0.30), ("VGT", 0.20), ("VXUS", 0.15)]
+                    elif target_beta >= 0.55:
+                        # Moderate
+                        equity_etfs = [("SPY", 0.40), ("QQQ", 0.20), ("VTI", 0.20), ("VXUS", 0.20)]
+                    else:
+                        # Conservative
+                        equity_etfs = [("VTI", 0.30), ("SCHD", 0.35), ("VIG", 0.20), ("VXUS", 0.15)]
+
+                    bond_etfs = [("BND", 0.40), ("TLT", 0.30), ("LQD", 0.30)]
+
+                    # Add equity positions
+                    for ticker, weight in equity_etfs:
+                        dollar_amount = equity_budget * weight
+                        stock_data = get_stock_data(ticker, period="5d")
+                        if "error" not in stock_data and not stock_data["history"].empty:
+                            price = float(stock_data["history"]["Close"].iloc[-1])
+                        else:
+                            price = 100
+                        qty = int(dollar_amount / price) if price > 0 else 0
+                        if qty > 0:
+                            st.session_state.portfolio.append({
                                 "ticker": ticker,
-                                "type": display_type,
+                                "type": "ETF" if ticker not in ["NVDA", "AMD", "TSLA"] else "Stock",
                                 "side": "Long",
-                                "quantity": quantity,
-                                "entry_price": current_price,
+                                "quantity": qty,
+                                "entry_price": price,
                                 "entry_date": datetime.now().strftime("%Y-%m-%d"),
                                 "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
                                 "id": len(st.session_state.portfolio)
-                            }
-                            st.session_state.portfolio.append(position)
+                            })
 
-                    # Update user profile with new target
+                    # Add bond positions
+                    for ticker, weight in bond_etfs:
+                        dollar_amount = bond_budget * weight
+                        stock_data = get_stock_data(ticker, period="5d")
+                        if "error" not in stock_data and not stock_data["history"].empty:
+                            price = float(stock_data["history"]["Close"].iloc[-1])
+                        else:
+                            price = 100
+                        qty = int(dollar_amount / price) if price > 0 else 0
+                        if qty > 0:
+                            st.session_state.portfolio.append({
+                                "ticker": ticker,
+                                "type": "Bond ETF" if ticker != "TLT" else "Treasury ETF",
+                                "side": "Long",
+                                "quantity": qty,
+                                "entry_price": price,
+                                "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                                "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
+                                "id": len(st.session_state.portfolio)
+                            })
+
+                    # Update user profile
                     if "user_profile" not in st.session_state or not st.session_state.user_profile:
                         st.session_state.user_profile = {"constraints": {}}
                     st.session_state.user_profile["risk_level"] = new_risk
                     st.session_state.user_profile["target_beta"] = target_beta
 
-                    st.success(f"✅ Rebalanced to beta {target_beta:.2f}!")
+                    st.success(f"✅ Rebalanced to beta {target_beta:.2f} ({equity_pct*100:.0f}% equity / {bond_pct*100:.0f}% bonds)")
                     st.rerun()
 
             st.markdown("---")
