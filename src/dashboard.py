@@ -2302,21 +2302,40 @@ What would you like to do?"""
         parsed = cls.parse_message_smart(user_message)
 
         # Check for confirmation of pending portfolio
+        # Note: Sidebar usually handles this first, but keeping for consistency
         if any(word in user_message.lower() for word in ["yes", "confirm", "do it", "proceed", "add it", "looks good"]):
             if st.session_state.get("pending_portfolio"):
                 portfolio = st.session_state.pending_portfolio
+                added_count = 0
                 for pos in portfolio["positions"]:
-                    stock_data = get_stock_data(pos["ticker"], period="5d")
-                    if "error" not in stock_data and not stock_data["history"].empty:
-                        current_price = float(stock_data["history"]["Close"].iloc[-1])
-                    else:
-                        current_price = pos.get("current_price", 100)
+                    ticker = pos["ticker"]
+                    dollar_amount = pos.get("dollar_amount", 0)
 
-                    quantity = int(pos["dollar_amount"] / current_price)
+                    # Get current price
+                    current_price = pos.get("current_price", 100)
+                    if current_price <= 0:
+                        stock_data = get_stock_data(ticker, period="5d")
+                        if "error" not in stock_data and not stock_data["history"].empty:
+                            current_price = float(stock_data["history"]["Close"].iloc[-1])
+                        else:
+                            current_price = 100
+
+                    quantity = int(dollar_amount / current_price) if current_price > 0 else 0
                     if quantity > 0:
+                        # Determine display type
+                        pos_type = pos.get("type", "equity").lower()
+                        if pos_type in ["stock"]:
+                            display_type = "Stock"
+                        elif pos_type in ["treasury"]:
+                            display_type = "Treasury ETF (TLT, IEF, SHY)"
+                        elif pos_type in ["bond", "corporate_bond", "high_yield"]:
+                            display_type = "Corporate Bond ETF (LQD, HYG)"
+                        else:
+                            display_type = "ETF"
+
                         position = {
-                            "ticker": pos["ticker"],
-                            "type": "ETF" if pos["type"] in ["equity", "treasury", "bond", "corporate_bond", "high_yield", "tips"] else "Stock",
+                            "ticker": ticker,
+                            "type": display_type,
                             "side": "Long",
                             "quantity": quantity,
                             "entry_price": current_price,
@@ -2325,9 +2344,10 @@ What would you like to do?"""
                             "id": len(st.session_state.portfolio)
                         }
                         st.session_state.portfolio.append(position)
+                        added_count += 1
 
                 st.session_state.pending_portfolio = None
-                return f"**Done!** Added {len(portfolio['positions'])} positions to your portfolio. Check the **Portfolio** tab to see them."
+                return f"✅ **Done!** Added {added_count} positions to your portfolio. Check the **Portfolio** tab to see them."
 
         # Try to execute the detected intent
         intent = parsed.get("intent", "unknown")
@@ -2428,19 +2448,37 @@ I can help you:
                 if any(word in user_input.lower() for word in ["yes", "add", "confirm", "do it", "proceed"]):
                     if st.session_state.get("pending_portfolio"):
                         portfolio = st.session_state.pending_portfolio
+                        added_count = 0
                         # Add positions to portfolio
                         for pos in portfolio["positions"]:
-                            stock_data = get_stock_data(pos["ticker"], period="5d")
-                            if "error" not in stock_data and not stock_data["history"].empty:
-                                current_price = float(stock_data["history"]["Close"].iloc[-1])
-                            else:
-                                current_price = 100  # Fallback
+                            ticker = pos["ticker"]
+                            dollar_amount = pos.get("dollar_amount", 0)
 
-                            quantity = int(pos["dollar_amount"] / current_price)
+                            # Get current price
+                            current_price = pos.get("current_price", 100)
+                            if current_price <= 0:
+                                stock_data = get_stock_data(ticker, period="5d")
+                                if "error" not in stock_data and not stock_data["history"].empty:
+                                    current_price = float(stock_data["history"]["Close"].iloc[-1])
+                                else:
+                                    current_price = 100
+
+                            quantity = int(dollar_amount / current_price) if current_price > 0 else 0
                             if quantity > 0:
+                                # Determine display type
+                                pos_type = pos.get("type", "equity").lower()
+                                if pos_type in ["stock"]:
+                                    display_type = "Stock"
+                                elif pos_type in ["treasury"]:
+                                    display_type = "Treasury ETF (TLT, IEF, SHY)"
+                                elif pos_type in ["bond", "corporate_bond", "high_yield"]:
+                                    display_type = "Corporate Bond ETF (LQD, HYG)"
+                                else:
+                                    display_type = "ETF"
+
                                 position = {
-                                    "ticker": pos["ticker"],
-                                    "type": "ETF" if pos["type"] in ["equity", "treasury", "bond", "corporate_bond", "high_yield", "tips"] else pos["type"],
+                                    "ticker": ticker,
+                                    "type": display_type,
                                     "side": "Long",
                                     "quantity": quantity,
                                     "entry_price": current_price,
@@ -2452,10 +2490,11 @@ I can help you:
                                     "id": len(st.session_state.portfolio)
                                 }
                                 st.session_state.portfolio.append(position)
+                                added_count += 1
 
                         st.session_state.chat_messages.append({
                             "role": "assistant",
-                            "content": f"✅ **Done!** I've added {len(portfolio['positions'])} positions to your portfolio. Check the **Portfolio** tab to see them."
+                            "content": f"✅ **Done!** I've added {added_count} positions to your portfolio. Check the **Portfolio** tab to see them."
                         })
                         st.session_state.pending_portfolio = None
                     else:
