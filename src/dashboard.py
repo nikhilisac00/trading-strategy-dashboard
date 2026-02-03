@@ -1711,27 +1711,34 @@ class SmartFinancialAgent:
             "phrases": ["very conservative", "extremely conservative", "ultra safe",
                        "scared of risk", "scared", "terrified", "hate risk", "no risk",
                        "fear risk", "risk averse", "very safe", "super safe", "minimal risk",
-                       "can't afford to lose", "retirement money", "life savings"],
+                       "can't afford to lose", "retirement money", "life savings",
+                       "don't like risk", "avoid risk", "zero risk"],
             "weight": 1.0
         },
         "conservative": {
             "phrases": ["conservative", "safe", "low risk", "cautious", "careful",
-                       "preserve capital", "preservation", "stable", "secure", "protect"],
+                       "preserve capital", "preservation", "stable", "secure", "protect",
+                       "not much risk", "little risk", "small risk", "prefer safe"],
             "weight": 0.8
         },
         "moderate": {
             "phrases": ["moderate", "balanced", "medium", "average", "normal",
-                       "some risk", "mix", "diversified", "middle ground"],
+                       "some risk", "mix", "diversified", "middle ground",
+                       "okay with some risk", "bit of risk"],
             "weight": 0.5
         },
         "aggressive": {
             "phrases": ["aggressive", "growth", "risky", "high return", "high growth",
-                       "willing to risk", "can handle risk", "long term growth"],
+                       "willing to risk", "can handle risk", "long term growth",
+                       "like risk", "love risk", "comfortable with risk", "okay with risk",
+                       "fine with risk", "don't mind risk", "can take risk", "risk taker",
+                       "higher returns", "maximize returns", "big returns", "good returns"],
             "weight": 0.3
         },
         "very_aggressive": {
             "phrases": ["very aggressive", "very risky", "maximum growth", "yolo",
-                       "high risk high reward", "speculative", "moon", "all in"],
+                       "high risk high reward", "speculative", "moon", "all in",
+                       "love high risk", "maximum risk", "go big", "swing for fences"],
             "weight": 0.1
         }
     }
@@ -1744,15 +1751,22 @@ class SmartFinancialAgent:
             r"make.*(portfolio|allocation)",
             r"(i have|invest|budget).+\$?\d+",
             r"(looking for|want|need).*(return|yield|income)",
-            r"(i have|got|with).+\d+.*(dollar|million|k\b|thousand)",  # "I have 1 million"
-            r"(scared|conservative|aggressive).*(want|treasury|stock)",  # Risk + assets
-            r"(want|need).*(treasury|bond|stock).*(and|some)",  # Multiple asset types
-            r"\$?\d+[mk]?\s*(to invest|budget|portfolio)",  # "$1M to invest"
+            r"(i have|got|with).+\d+.*(dollar|million|k\b|thousand)",
+            r"(scared|conservative|aggressive).*(want|treasury|stock)",
+            r"(want|need).*(treasury|bond|stock).*(and|some)",
+            r"\$?\d+[mk]?\s*(to invest|budget|portfolio)",
+            # New natural language patterns
+            r"(i like|i love|i want|i prefer).*(risk|growth|stock)",
+            r"(return|yield|gain).*(of|about|around)?\s*\d+\s*%",
+            r"\d+\s*%\s*(return|yield|yearly|annual)",
+            r"(like|love|want|prefer|fan of)\s+[A-Z]{2,5}\b",  # "I like OKLO"
+            r"(invest|put|allocate).*money",
         ],
         "add_stock": [
-            r"(add|buy|purchase|get|include|want)\s+.*(stock|share|position)?",
+            r"(add|buy|purchase|get|include)\s+.*(stock|share|position)?",
             r"(add|buy|purchase)\s+\$?\d+.*\s+(of|worth|in)",
             r"\d+\s+shares?\s+(of\s+)?",
+            r"^add\s+[A-Z]{1,5}$",  # Simple "add TSLA"
         ],
         "remove_stock": [
             r"(remove|sell|drop|delete|get rid)\s+",
@@ -1987,6 +2001,46 @@ class SmartFinancialAgent:
         return None
 
     @classmethod
+    def detect_return_target(cls, text: str) -> float:
+        """Detect target return percentage from text."""
+        text_lower = text.lower()
+
+        # Patterns for return targets
+        patterns = [
+            r'return\s*(?:of\s*)?(?:about\s*)?(\d+(?:\.\d+)?)\s*%',  # "return of about 10%"
+            r'(\d+(?:\.\d+)?)\s*%\s*(?:return|yield|yearly|annual|per year)',  # "10% return"
+            r'(?:target|want|need|looking for)\s*(\d+(?:\.\d+)?)\s*%',  # "target 10%"
+            r'(\d+(?:\.\d+)?)\s*%\s*(?:a year|annually)',  # "10% a year"
+            r'(?:make|earn|get)\s*(\d+(?:\.\d+)?)\s*%',  # "make 10%"
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, text_lower)
+            if match:
+                return float(match.group(1)) / 100
+
+        return None
+
+    @classmethod
+    def extract_raw_tickers(cls, text: str) -> list:
+        """Extract potential stock tickers (2-5 uppercase letters) from text."""
+        # Find all uppercase words that look like tickers
+        potential_tickers = re.findall(r'\b([A-Z]{2,5})\b', text)
+
+        # Filter out common words that aren't tickers
+        non_tickers = {'I', 'A', 'THE', 'AND', 'OR', 'FOR', 'TO', 'IN', 'ON', 'AT', 'BY',
+                       'AN', 'AS', 'IF', 'IT', 'OF', 'UP', 'DO', 'GO', 'SO', 'NO', 'US',
+                       'AM', 'PM', 'OK', 'HI', 'MY', 'ME', 'WE', 'HE', 'BE', 'IS', 'ARE',
+                       'WAS', 'HAS', 'HAD', 'BUT', 'NOT', 'ALL', 'CAN', 'HER', 'WAS',
+                       'ONE', 'OUR', 'OUT', 'YOU', 'DAY', 'GET', 'HAS', 'HIM', 'HIS',
+                       'HOW', 'ITS', 'LET', 'MAY', 'NEW', 'NOW', 'OLD', 'SEE', 'WAY',
+                       'WHO', 'BOY', 'DID', 'OWN', 'SAY', 'SHE', 'TOO', 'USE', 'USD',
+                       'ETF', 'CEO', 'CFO', 'IPO', 'USA', 'NYC', 'API'}
+
+        valid_tickers = [t for t in potential_tickers if t not in non_tickers]
+        return valid_tickers
+
+    @classmethod
     def parse_message_smart(cls, text: str) -> dict:
         """Smart message parsing using spaCy + regex."""
         # Get entities from spaCy or fallback to regex
@@ -2004,6 +2058,12 @@ class SmartFinancialAgent:
         # Resolve companies and tickers
         tickers = cls.resolve_companies(text, entities)
 
+        # Also extract raw tickers from text (like OKLO, TSLA mentioned directly)
+        raw_tickers = cls.extract_raw_tickers(text)
+        for ticker in raw_tickers:
+            if ticker not in tickers:
+                tickers.append(ticker)
+
         # Detect risk level
         risk_level, risk_confidence = cls.detect_risk_level(text)
 
@@ -2012,6 +2072,9 @@ class SmartFinancialAgent:
 
         # Detect treasury preference
         treasury_pct = cls.detect_treasury_preference(text)
+
+        # Detect return target
+        return_target = cls.detect_return_target(text)
 
         # Get budget (largest money amount, or largest number if no money detected)
         budget = None
@@ -2022,6 +2085,10 @@ class SmartFinancialAgent:
             if large_nums:
                 budget = max(large_nums)
 
+        # If we detected risk, tickers, or return target, assume create_portfolio intent
+        if (risk_level or tickers or return_target) and intent == "unknown":
+            intent = "create_portfolio"
+
         return {
             "intent": intent,
             "intent_confidence": intent_confidence,
@@ -2030,6 +2097,7 @@ class SmartFinancialAgent:
             "budget": budget,
             "treasury_pct": treasury_pct,
             "tickers": tickers,
+            "return_target": return_target,
             "percentages": entities.get("percentages", []) + regex_entities.get("percentages", []),
             "raw_entities": entities,
         }
@@ -2076,12 +2144,14 @@ class SmartFinancialAgent:
                 budget = parsed.get("budget") or 100000
                 treasury_pct = parsed.get("treasury_pct")
                 tickers = parsed.get("tickers", [])
+                return_target = parsed.get("return_target")
 
                 portfolio = FinancialPlannerAI.generate_portfolio(
                     risk_level=risk_level,
                     budget=budget,
                     treasury_pct=treasury_pct,
-                    specific_stocks=tickers if tickers else None
+                    specific_stocks=tickers if tickers else None,
+                    return_target=return_target
                 )
 
                 st.session_state.pending_portfolio = portfolio
@@ -2092,6 +2162,8 @@ class SmartFinancialAgent:
 **Your Profile:** {risk_level.replace('_', ' ').title()}
 **Budget:** ${budget:,.0f}
 """
+                if return_target:
+                    response += f"**Target Return:** {return_target*100:.0f}%\n"
                 if treasury_pct:
                     response += f"**Treasury Allocation:** {treasury_pct*100:.0f}%\n"
                 if tickers:
