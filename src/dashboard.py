@@ -3831,6 +3831,59 @@ with tab4:
                     st.success("✅ Portfolio matches your risk preference!")
                 else:
                     st.warning(f"⚠️ Portfolio is {actual_risk_label} but you selected {user_risk_display}")
+                    # Add rebalance button when there's a mismatch
+                    if st.button("🔄 Rebalance to Match Target", key="rebalance_to_target", use_container_width=True):
+                        # Get current portfolio value
+                        current_value = total_val if total_val > 0 else 100000
+                        # Get user's target risk level
+                        target_risk = user_risk_level
+                        # Get any specific stocks user wants to keep
+                        current_tickers = [p.get("ticker") for p in st.session_state.portfolio if p.get("ticker")]
+                        # Keep individual stocks (not ETFs) the user had
+                        etf_tickers = ["SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG"]
+                        user_stocks = [t for t in current_tickers if t not in etf_tickers]
+
+                        # Generate new portfolio matching target risk
+                        new_portfolio = FinancialPlannerAI.generate_portfolio(
+                            risk_level=target_risk,
+                            budget=current_value,
+                            specific_stocks=user_stocks if user_stocks else None
+                        )
+
+                        # Clear current portfolio and add new positions
+                        st.session_state.portfolio = []
+                        for pos in new_portfolio["positions"]:
+                            ticker = pos["ticker"]
+                            dollar_amount = pos.get("dollar_amount", 0)
+                            current_price = pos.get("current_price", 100)
+                            if current_price <= 0:
+                                current_price = 100
+                            quantity = int(dollar_amount / current_price) if current_price > 0 else 0
+                            if quantity > 0:
+                                pos_type = pos.get("type", "equity").lower()
+                                if pos_type == "stock":
+                                    display_type = "Stock"
+                                elif pos_type == "treasury":
+                                    display_type = "Treasury ETF"
+                                elif pos_type in ["bond", "corporate_bond", "high_yield"]:
+                                    display_type = "Bond ETF"
+                                else:
+                                    display_type = "ETF"
+
+                                position = {
+                                    "ticker": ticker,
+                                    "type": display_type,
+                                    "side": "Long",
+                                    "quantity": quantity,
+                                    "entry_price": current_price,
+                                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                                    "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
+                                    "id": len(st.session_state.portfolio)
+                                }
+                                st.session_state.portfolio.append(position)
+
+                        st.success(f"✅ Portfolio rebalanced to {user_risk_display} risk profile!")
+                        st.rerun()
 
                 st.metric("Equity Allocation", f"{equity_pct:.0f}%")
                 st.metric("Fixed Income", f"{bond_pct:.0f}%")
