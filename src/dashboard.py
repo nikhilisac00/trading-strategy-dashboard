@@ -2410,18 +2410,22 @@ class SmartFinancialAgent:
                 st.session_state.user_profile["risk_level"] = risk_level
                 st.session_state.user_profile["budget"] = budget
 
-                # Assign a random beta within the risk level's threshold
-                import random
-                beta_ranges = {
-                    "very_conservative": (0.10, 0.29),
-                    "conservative": (0.30, 0.54),
-                    "moderate": (0.55, 0.84),
-                    "aggressive": (0.85, 1.04),
-                    "very_aggressive": (1.05, 1.40),
-                }
-                beta_min, beta_max = beta_ranges.get(risk_level, (0.55, 0.84))
-                random_beta = round(random.uniform(beta_min, beta_max), 2)
-                st.session_state.user_profile["target_beta"] = random_beta
+                # Only assign random beta if user hasn't set a specific target beta via slider
+                # Prioritize user's explicit beta target over random assignment
+                existing_beta = st.session_state.user_profile.get("target_beta")
+                if existing_beta is None:
+                    # No specific beta set - assign random within risk level's threshold
+                    import random
+                    beta_ranges = {
+                        "very_conservative": (0.10, 0.29),
+                        "conservative": (0.30, 0.54),
+                        "moderate": (0.55, 0.84),
+                        "aggressive": (0.85, 1.04),
+                        "very_aggressive": (1.05, 1.40),
+                    }
+                    beta_min, beta_max = beta_ranges.get(risk_level, (0.55, 0.84))
+                    random_beta = round(random.uniform(beta_min, beta_max), 2)
+                    st.session_state.user_profile["target_beta"] = random_beta
 
                 if return_target:
                     st.session_state.user_profile["return_target"] = return_target
