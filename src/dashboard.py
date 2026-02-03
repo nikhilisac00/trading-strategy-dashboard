@@ -585,13 +585,18 @@ class FinancialPlannerAI:
 
     # Asset class expected returns and risk (historical approximations)
     ASSET_CLASSES = {
-        # Equities
+        # Equities - Broad Market
         "SPY": {"name": "S&P 500 ETF", "type": "equity", "expected_return": 0.10, "risk": 0.16, "yield": 0.013},
         "QQQ": {"name": "Nasdaq 100 ETF", "type": "equity", "expected_return": 0.12, "risk": 0.20, "yield": 0.005},
         "VTI": {"name": "Total Stock Market", "type": "equity", "expected_return": 0.10, "risk": 0.16, "yield": 0.014},
         "VXUS": {"name": "International Stocks", "type": "equity", "expected_return": 0.07, "risk": 0.18, "yield": 0.03},
         "VWO": {"name": "Emerging Markets", "type": "equity", "expected_return": 0.08, "risk": 0.22, "yield": 0.025},
         "VNQ": {"name": "Real Estate (REITs)", "type": "real_estate", "expected_return": 0.08, "risk": 0.18, "yield": 0.04},
+
+        # Equities - High Beta / Growth (for aggressive portfolios)
+        "VGT": {"name": "Tech Sector ETF", "type": "equity", "expected_return": 0.14, "risk": 0.22, "yield": 0.006},
+        "IWM": {"name": "Small Cap ETF", "type": "equity", "expected_return": 0.11, "risk": 0.22, "yield": 0.012},
+        "VIG": {"name": "Dividend Appreciation", "type": "equity", "expected_return": 0.09, "risk": 0.14, "yield": 0.018},
 
         # Fixed Income
         "TLT": {"name": "20+ Year Treasury", "type": "treasury", "expected_return": 0.04, "risk": 0.12, "yield": 0.045},
@@ -640,13 +645,13 @@ class FinancialPlannerAI:
         },
     }
 
-    # Risk profiles linked to target Beta
+    # Risk profiles linked to target Beta (calibrated for achievable ETF portfolios)
     BETA_TARGETS = {
-        "very_conservative": {"min": 0.1, "max": 0.4, "target": 0.25},
-        "conservative": {"min": 0.3, "max": 0.6, "target": 0.5},
-        "moderate": {"min": 0.6, "max": 0.9, "target": 0.75},
-        "aggressive": {"min": 0.9, "max": 1.3, "target": 1.1},
-        "very_aggressive": {"min": 1.2, "max": 2.0, "target": 1.5},
+        "very_conservative": {"min": 0.05, "max": 0.3, "target": 0.15},
+        "conservative": {"min": 0.25, "max": 0.55, "target": 0.4},
+        "moderate": {"min": 0.5, "max": 0.85, "target": 0.7},
+        "aggressive": {"min": 0.8, "max": 1.05, "target": 0.95},
+        "very_aggressive": {"min": 1.0, "max": 1.5, "target": 1.15},
     }
 
     # Bond ETF risk metrics: duration (interest rate sensitivity), convexity, spread duration (credit)
@@ -1047,19 +1052,36 @@ class FinancialPlannerAI:
             bond_alloc = 0
             equity_alloc = max(0, 1.0 - treasury_alloc - specific_stock_alloc)
 
-        # Build specific allocations for ETFs
+        # Build specific allocations for ETFs based on risk level
         if equity_alloc > 0:
-            # Diversify equity
-            if risk_level in ["aggressive", "very_aggressive"]:
-                allocations["SPY"] = equity_alloc * 0.40
+            if risk_level == "very_aggressive":
+                # High-beta growth focused: QQQ (1.1), VGT (1.2), ARKK (1.5+), small caps
+                allocations["QQQ"] = equity_alloc * 0.35   # Nasdaq 100, beta ~1.1
+                allocations["VGT"] = equity_alloc * 0.25   # Tech sector, beta ~1.2
+                allocations["IWM"] = equity_alloc * 0.20   # Small cap, beta ~1.2
+                allocations["VWO"] = equity_alloc * 0.20   # Emerging markets, beta ~1.1
+            elif risk_level == "aggressive":
+                # Growth tilted but more diversified
+                allocations["SPY"] = equity_alloc * 0.35
                 allocations["QQQ"] = equity_alloc * 0.30
+                allocations["VGT"] = equity_alloc * 0.20   # Tech for higher beta
                 allocations["VXUS"] = equity_alloc * 0.15
-                allocations["VWO"] = equity_alloc * 0.15
-            else:
-                allocations["SPY"] = equity_alloc * 0.50
-                allocations["VTI"] = equity_alloc * 0.20
+            elif risk_level == "moderate":
+                # Balanced broad market
+                allocations["SPY"] = equity_alloc * 0.40
+                allocations["VTI"] = equity_alloc * 0.25
                 allocations["VXUS"] = equity_alloc * 0.20
-                allocations["SCHD"] = equity_alloc * 0.10
+                allocations["SCHD"] = equity_alloc * 0.15  # Dividend for stability
+            elif risk_level == "conservative":
+                # Defensive, dividend focused
+                allocations["VTI"] = equity_alloc * 0.30
+                allocations["SCHD"] = equity_alloc * 0.30  # Dividend ETF, lower beta
+                allocations["VIG"] = equity_alloc * 0.25   # Dividend growth, beta ~0.9
+                allocations["VXUS"] = equity_alloc * 0.15
+            else:  # very_conservative
+                # Minimal equity, very defensive
+                allocations["SCHD"] = equity_alloc * 0.50  # Dividend, lower volatility
+                allocations["VIG"] = equity_alloc * 0.50   # Dividend growth
 
         if treasury_alloc > 0:
             # Diversify treasury
@@ -3760,16 +3782,22 @@ with tab4:
             portfolio_beta = FinancialPlannerAI.calculate_portfolio_beta(st.session_state.portfolio)
 
             # Determine ACTUAL portfolio risk level based on beta
-            if portfolio_beta < 0.4:
+            # Thresholds calibrated for achievable ETF portfolios:
+            # - Very Conservative: Heavy bonds/treasury (beta ~0.1-0.3)
+            # - Conservative: Mostly bonds, some stocks (beta ~0.3-0.55)
+            # - Moderate: Balanced 60/40 style (beta ~0.55-0.85)
+            # - Aggressive: Equity heavy (beta ~0.85-1.05)
+            # - Very Aggressive: Growth/tech focused (beta >= 1.05)
+            if portfolio_beta < 0.3:
                 actual_risk_label = "Very Conservative"
                 actual_risk_emoji = "🛡️"
-            elif portfolio_beta < 0.7:
+            elif portfolio_beta < 0.55:
                 actual_risk_label = "Conservative"
                 actual_risk_emoji = "🌿"
-            elif portfolio_beta < 1.0:
+            elif portfolio_beta < 0.85:
                 actual_risk_label = "Moderate"
                 actual_risk_emoji = "⚖️"
-            elif portfolio_beta < 1.3:
+            elif portfolio_beta < 1.05:
                 actual_risk_label = "Aggressive"
                 actual_risk_emoji = "🔥"
             else:
@@ -3840,7 +3868,7 @@ with tab4:
                         # Get any specific stocks user wants to keep
                         current_tickers = [p.get("ticker") for p in st.session_state.portfolio if p.get("ticker")]
                         # Keep individual stocks (not ETFs) the user had
-                        etf_tickers = ["SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG"]
+                        etf_tickers = ["SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "VGT", "IWM", "VIG", "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG"]
                         user_stocks = [t for t in current_tickers if t not in etf_tickers]
 
                         # Generate new portfolio matching target risk
