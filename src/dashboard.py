@@ -3866,11 +3866,17 @@ with tab4:
             beta_col1, beta_col2, beta_col3 = st.columns([2, 1, 1])
 
             with beta_col1:
+                # Use target_beta from user_profile if set (from chatbot), otherwise use current portfolio beta
+                saved_target_beta = st.session_state.user_profile.get("target_beta") if st.session_state.user_profile else None
+                default_beta = saved_target_beta if saved_target_beta else (portfolio_beta if portfolio_beta > 0.1 else 0.7)
+                # Clamp to slider range
+                default_beta = max(0.1, min(1.5, default_beta))
+
                 target_beta = st.slider(
                     "Target Portfolio Beta:",
                     min_value=0.1,
                     max_value=1.5,
-                    value=portfolio_beta if portfolio_beta > 0.1 else 0.7,
+                    value=default_beta,
                     step=0.05,
                     help="0.1-0.3: Very Conservative | 0.3-0.55: Conservative | 0.55-0.85: Moderate | 0.85-1.05: Aggressive | 1.05+: Very Aggressive"
                 )
