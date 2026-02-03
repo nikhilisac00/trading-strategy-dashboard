@@ -1019,6 +1019,8 @@ class FinancialPlannerAI:
         # Determine treasury allocation
         if treasury_pct is not None:
             treasury_alloc = treasury_pct
+        elif risk_level == "very_aggressive":
+            treasury_alloc = 0  # No treasury for very aggressive
         else:
             treasury_alloc = (profile["treasury_range"][0] + profile["treasury_range"][1]) / 2
 
@@ -1026,9 +1028,13 @@ class FinancialPlannerAI:
         equity_min, equity_max = profile["equity_range"]
         remaining_equity = max(0, equity_max - specific_stock_alloc)
 
-        # If return target specified, adjust equity allocation
-        if return_target:
-            # Higher return target = more equity
+        # For very_aggressive: maximize equity, no bonds
+        if risk_level == "very_aggressive":
+            equity_alloc = 1.0 - specific_stock_alloc  # 100% equity (minus any specific stocks)
+            bond_alloc = 0
+            treasury_alloc = 0
+        elif return_target:
+            # If return target specified, adjust equity allocation
             if return_target >= 0.12:
                 equity_alloc = min(remaining_equity, equity_max)
             elif return_target >= 0.09:
@@ -1037,15 +1043,15 @@ class FinancialPlannerAI:
                 equity_alloc = min(remaining_equity, equity_min)
             else:
                 equity_alloc = min(remaining_equity, equity_min * 0.5)
+            bond_alloc = 1.0 - equity_alloc - treasury_alloc - specific_stock_alloc
         else:
             equity_alloc = min(remaining_equity, (equity_min + equity_max) / 2)
+            bond_alloc = 1.0 - equity_alloc - treasury_alloc - specific_stock_alloc
 
         # For very_conservative with specific stocks, minimize other equity
         if risk_level == "very_conservative" and specific_stocks:
             equity_alloc = 0  # Only use the specific stocks they requested
-
-        # Calculate bond allocation
-        bond_alloc = 1.0 - equity_alloc - treasury_alloc - specific_stock_alloc
+            bond_alloc = 1.0 - treasury_alloc - specific_stock_alloc
 
         # Ensure non-negative
         if bond_alloc < 0:
@@ -1055,11 +1061,14 @@ class FinancialPlannerAI:
         # Build specific allocations for ETFs based on risk level
         if equity_alloc > 0:
             if risk_level == "very_aggressive":
-                # High-beta growth focused: QQQ (1.1), VGT (1.2), ARKK (1.5+), small caps
-                allocations["QQQ"] = equity_alloc * 0.35   # Nasdaq 100, beta ~1.1
-                allocations["VGT"] = equity_alloc * 0.25   # Tech sector, beta ~1.2
-                allocations["IWM"] = equity_alloc * 0.20   # Small cap, beta ~1.2
-                allocations["VWO"] = equity_alloc * 0.20   # Emerging markets, beta ~1.1
+                # High-beta: mix of growth ETFs AND high-beta individual stocks
+                # Include NVDA (~1.7), AMD (~1.6), TSLA (~2.0) for higher beta
+                allocations["QQQ"] = equity_alloc * 0.25   # Nasdaq 100, beta ~1.1
+                allocations["NVDA"] = equity_alloc * 0.20  # NVIDIA, beta ~1.7
+                allocations["AMD"] = equity_alloc * 0.15   # AMD, beta ~1.6
+                allocations["TSLA"] = equity_alloc * 0.15  # Tesla, beta ~2.0
+                allocations["VGT"] = equity_alloc * 0.15   # Tech sector, beta ~1.2
+                allocations["IWM"] = equity_alloc * 0.10   # Small cap, beta ~1.2
             elif risk_level == "aggressive":
                 # Growth tilted but more diversified
                 allocations["SPY"] = equity_alloc * 0.35
