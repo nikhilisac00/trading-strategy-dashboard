@@ -3873,25 +3873,79 @@ with tab4:
                 st.metric("Target Level", target_label)
 
             with beta_col3:
-                if st.button("🎯 Set Beta Target", key="set_custom_beta", use_container_width=True):
-                    # Map beta to risk level for portfolio generation
-                    if target_beta < 0.3:
-                        new_risk = "very_conservative"
-                    elif target_beta < 0.55:
-                        new_risk = "conservative"
-                    elif target_beta < 0.85:
-                        new_risk = "moderate"
-                    elif target_beta < 1.05:
-                        new_risk = "aggressive"
-                    else:
-                        new_risk = "very_aggressive"
+                # Map beta to risk level
+                if target_beta < 0.3:
+                    new_risk = "very_conservative"
+                elif target_beta < 0.55:
+                    new_risk = "conservative"
+                elif target_beta < 0.85:
+                    new_risk = "moderate"
+                elif target_beta < 1.05:
+                    new_risk = "aggressive"
+                else:
+                    new_risk = "very_aggressive"
 
-                    # Update user profile
+                if st.button("🔄 Rebalance to Beta", key="rebalance_to_beta", use_container_width=True):
+                    # Calculate current portfolio value
+                    rebal_total = sum(p.get("quantity", 0) * p.get("entry_price", 100)
+                                     for p in st.session_state.portfolio)
+                    rebal_budget = rebal_total if rebal_total > 0 else 100000
+
+                    # Get user's individual stocks to keep
+                    current_tickers = [p.get("ticker") for p in st.session_state.portfolio if p.get("ticker")]
+                    algo_tickers = [
+                        "SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "VGT", "IWM", "VIG",
+                        "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG",
+                        "NVDA", "AMD", "TSLA"
+                    ]
+                    user_stocks = [t for t in current_tickers if t not in algo_tickers]
+
+                    # Generate new portfolio matching target beta/risk
+                    new_portfolio = FinancialPlannerAI.generate_portfolio(
+                        risk_level=new_risk,
+                        budget=rebal_budget,
+                        specific_stocks=user_stocks if user_stocks else None
+                    )
+
+                    # Clear and rebuild portfolio
+                    st.session_state.portfolio = []
+                    for pos in new_portfolio["positions"]:
+                        ticker = pos["ticker"]
+                        dollar_amount = pos.get("dollar_amount", 0)
+                        current_price = pos.get("current_price", 100)
+                        if current_price <= 0:
+                            current_price = 100
+                        quantity = int(dollar_amount / current_price) if current_price > 0 else 0
+                        if quantity > 0:
+                            pos_type = pos.get("type", "equity").lower()
+                            if pos_type == "stock":
+                                display_type = "Stock"
+                            elif pos_type == "treasury":
+                                display_type = "Treasury ETF"
+                            elif pos_type in ["bond", "corporate_bond", "high_yield"]:
+                                display_type = "Bond ETF"
+                            else:
+                                display_type = "ETF"
+
+                            position = {
+                                "ticker": ticker,
+                                "type": display_type,
+                                "side": "Long",
+                                "quantity": quantity,
+                                "entry_price": current_price,
+                                "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                                "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
+                                "id": len(st.session_state.portfolio)
+                            }
+                            st.session_state.portfolio.append(position)
+
+                    # Update user profile with new target
                     if "user_profile" not in st.session_state or not st.session_state.user_profile:
                         st.session_state.user_profile = {"constraints": {}}
                     st.session_state.user_profile["risk_level"] = new_risk
                     st.session_state.user_profile["target_beta"] = target_beta
-                    st.success(f"Target beta set to {target_beta:.2f} ({new_risk.replace('_', ' ').title()})")
+
+                    st.success(f"✅ Rebalanced to beta {target_beta:.2f}!")
                     st.rerun()
 
             st.markdown("---")
