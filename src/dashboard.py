@@ -2663,7 +2663,12 @@ def _placeholder_for_removed_old_code():
 # ============================================================
 
 with st.sidebar:
-    st.title("🤖 AI Financial Planner")
+    # Logo
+    import os
+    logo_path = os.path.join(os.path.dirname(__file__), "..", "assets", "logo.png")
+    if os.path.exists(logo_path):
+        st.image(logo_path, width=150)
+    st.title("AI Financial Planner")
 
     # Show AI status
     ai_status = []
