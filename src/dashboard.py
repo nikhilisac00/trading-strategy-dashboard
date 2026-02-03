@@ -2444,6 +2444,7 @@ class SmartFinancialAgent:
                 response = f"""## Portfolio Created for You
 
 **Your Profile:** {risk_level.replace('_', ' ').title()}
+**Target Beta:** {random_beta} (assigned within {risk_level.replace('_', ' ')} range)
 **Budget:** ${budget:,.0f}
 """
                 if return_target:
