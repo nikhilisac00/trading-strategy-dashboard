@@ -3711,46 +3711,63 @@ with tab4:
             st.markdown("---")
             st.subheader("Risk Profile & Beta Analysis")
 
+            # Get USER'S SELECTED risk profile from session state
+            user_risk_level = st.session_state.user_profile.get("risk_level", "moderate") if st.session_state.user_profile else "moderate"
+
+            # Map user risk level to display format
+            user_risk_map = {
+                "very_conservative": ("Very Conservative", "🛡️"),
+                "conservative": ("Conservative", "🌿"),
+                "moderate": ("Moderate", "⚖️"),
+                "aggressive": ("Aggressive", "🔥"),
+                "very_aggressive": ("Very Aggressive", "🚀"),
+            }
+            user_risk_display, user_risk_emoji = user_risk_map.get(user_risk_level, ("Moderate", "⚖️"))
+
             # Calculate portfolio beta and risk metrics
             portfolio_beta = FinancialPlannerAI.calculate_portfolio_beta(st.session_state.portfolio)
 
-            # Determine risk level based on beta
+            # Determine ACTUAL portfolio risk level based on beta
             if portfolio_beta < 0.4:
-                risk_label = "Very Conservative"
-                risk_color = "green"
-                risk_emoji = "🛡️"
+                actual_risk_label = "Very Conservative"
+                actual_risk_emoji = "🛡️"
             elif portfolio_beta < 0.7:
-                risk_label = "Conservative"
-                risk_color = "lightgreen"
-                risk_emoji = "🌿"
+                actual_risk_label = "Conservative"
+                actual_risk_emoji = "🌿"
             elif portfolio_beta < 1.0:
-                risk_label = "Moderate"
-                risk_color = "yellow"
-                risk_emoji = "⚖️"
+                actual_risk_label = "Moderate"
+                actual_risk_emoji = "⚖️"
             elif portfolio_beta < 1.3:
-                risk_label = "Aggressive"
-                risk_color = "orange"
-                risk_emoji = "🔥"
+                actual_risk_label = "Aggressive"
+                actual_risk_emoji = "🔥"
             else:
-                risk_label = "Very Aggressive"
-                risk_color = "red"
-                risk_emoji = "🚀"
+                actual_risk_label = "Very Aggressive"
+                actual_risk_emoji = "🚀"
+
+            # Check if portfolio matches user preference
+            risk_match = actual_risk_label.lower().replace(" ", "_") == user_risk_level or actual_risk_label == user_risk_display
 
             risk_col1, risk_col2, risk_col3 = st.columns(3)
 
             with risk_col1:
+                st.markdown("##### Your Selected Risk Profile")
+                st.metric(
+                    "Target Risk",
+                    f"{user_risk_emoji} {user_risk_display}",
+                )
+                st.caption("Based on your stated preference")
+
+            with risk_col2:
+                st.markdown("##### Actual Portfolio Risk")
                 st.metric(
                     "Portfolio Beta",
                     f"{portfolio_beta:.2f}",
                     delta=f"vs Market (1.0)",
                     delta_color="off"
                 )
-                st.caption("Beta measures volatility relative to S&P 500")
-
-            with risk_col2:
                 st.metric(
-                    "Risk Profile",
-                    f"{risk_emoji} {risk_label}",
+                    "Calculated Risk",
+                    f"{actual_risk_emoji} {actual_risk_label}",
                 )
                 # Risk gauge
                 beta_pct = min(100, max(0, (portfolio_beta / 2) * 100))
@@ -3758,6 +3775,7 @@ with tab4:
                 st.caption(f"Risk Level: {beta_pct:.0f}%")
 
             with risk_col3:
+                st.markdown("##### Risk Alignment")
                 # Calculate allocation percentages
                 total_val = sum(p["value"] for p in position_values) if position_values else 0
                 equity_val = sum(p["value"] for p in position_values if "Stock" in p.get("type", "") or "ETF" in p.get("type", "")) if position_values else 0
@@ -3765,6 +3783,12 @@ with tab4:
 
                 equity_pct = (equity_val / total_val * 100) if total_val > 0 else 0
                 bond_pct = (bond_val / total_val * 100) if total_val > 0 else 0
+
+                # Show match status
+                if risk_match:
+                    st.success("✅ Portfolio matches your risk preference!")
+                else:
+                    st.warning(f"⚠️ Portfolio is {actual_risk_label} but you selected {user_risk_display}")
 
                 st.metric("Equity Allocation", f"{equity_pct:.0f}%")
                 st.metric("Fixed Income", f"{bond_pct:.0f}%")
