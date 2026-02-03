@@ -3544,42 +3544,52 @@ with tab4:
     with col1:
         st.subheader("Add Position")
 
+        # Type selection OUTSIDE form for immediate update
+        pos_type = st.selectbox("Type:", [
+            "Stock",
+            "Call Option",
+            "Put Option",
+            "--- Fixed Income ---",
+            "Treasury Bond",
+            "Treasury ETF (TLT, IEF, SHY)",
+            "Corporate Bond ETF (LQD, HYG)",
+            "Municipal Bond",
+            "I-Bond / TIPS",
+            "--- Other ---",
+            "ETF",
+            "Crypto",
+            "Commodity"
+        ], key="position_type_selector")
+
+        # Show type-specific info
+        is_fixed_income = "Bond" in pos_type or "Treasury" in pos_type or "TIPS" in pos_type
+        is_option = "Option" in pos_type
+
+        if is_fixed_income:
+            st.info("📊 Fixed income selected - enter yield/coupon and maturity below")
+        elif is_option:
+            st.info("📈 Option selected - enter strike and expiration below")
+
         with st.form("add_position"):
-            pos_ticker = st.text_input("Ticker:", value="SPY")
+            pos_ticker = st.text_input("Ticker:", value="SPY" if not is_fixed_income else "TLT")
 
             # Position side (Long/Short)
             pos_side = st.selectbox("Side:", ["Long (Buy)", "Short (Sell)"])
-
-            # Expanded position types including fixed income
-            pos_type = st.selectbox("Type:", [
-                "Stock",
-                "Call Option",
-                "Put Option",
-                "--- Fixed Income ---",
-                "Treasury Bond",
-                "Treasury ETF (TLT, IEF, SHY)",
-                "Corporate Bond ETF (LQD, HYG)",
-                "Municipal Bond",
-                "I-Bond / TIPS",
-                "--- Other ---",
-                "ETF",
-                "Crypto",
-                "Commodity"
-            ])
 
             pos_quantity = st.number_input("Quantity:", value=100, step=1)
             pos_entry = st.number_input("Entry Price:", value=100.0, step=0.01)
 
             # For options, add strike and expiry
-            if "Option" in pos_type:
+            if is_option:
                 pos_strike = st.number_input("Strike Price:", value=100.0, step=1.0)
                 pos_expiry = st.date_input("Expiration:", value=datetime.now() + timedelta(days=30))
             else:
                 pos_strike = None
                 pos_expiry = None
 
-            # For bonds, add yield and maturity
-            if "Bond" in pos_type or "Treasury" in pos_type or "TIPS" in pos_type:
+            # For bonds/treasury, add yield and maturity - ALWAYS show when fixed income
+            if is_fixed_income:
+                st.markdown("**Fixed Income Details:**")
                 pos_yield = st.number_input("Yield/Coupon (%):", value=4.5, step=0.1)
                 pos_maturity = st.date_input("Maturity Date:", value=datetime.now() + timedelta(days=365*5))
             else:
@@ -3870,15 +3880,26 @@ with tab4:
                     st.warning(f"⚠️ Portfolio is {actual_risk_label} but you selected {user_risk_display}")
                     # Add rebalance button when there's a mismatch
                     if st.button("🔄 Rebalance to Match Target", key="rebalance_to_target", use_container_width=True):
-                        # Get current portfolio value
-                        current_value = total_val if total_val > 0 else 100000
+                        # RECALCULATE current portfolio value FRESH from session state
+                        fresh_total = 0
+                        for pos in st.session_state.portfolio:
+                            qty = pos.get("quantity", 0)
+                            price = pos.get("entry_price", 100)
+                            fresh_total += qty * price
+                        current_value = fresh_total if fresh_total > 0 else 100000
+
                         # Get user's target risk level
                         target_risk = user_risk_level
                         # Get any specific stocks user wants to keep
                         current_tickers = [p.get("ticker") for p in st.session_state.portfolio if p.get("ticker")]
-                        # Keep individual stocks (not ETFs) the user had
-                        etf_tickers = ["SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "VGT", "IWM", "VIG", "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG"]
-                        user_stocks = [t for t in current_tickers if t not in etf_tickers]
+                        # Keep individual stocks (not ETFs or algo-generated stocks) the user had
+                        # Include all ETFs and high-beta stocks used by the algorithm
+                        algo_tickers = [
+                            "SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "VGT", "IWM", "VIG",
+                            "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG",
+                            "NVDA", "AMD", "TSLA"  # High-beta stocks used in very_aggressive
+                        ]
+                        user_stocks = [t for t in current_tickers if t not in algo_tickers]
 
                         # Generate new portfolio matching target risk
                         new_portfolio = FinancialPlannerAI.generate_portfolio(
