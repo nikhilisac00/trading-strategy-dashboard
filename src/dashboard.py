@@ -1705,40 +1705,184 @@ class SmartFinancialAgent:
         "spy": "SPY", "qqq": "QQQ", "voo": "VOO", "vti": "VTI", "arkk": "ARKK",
     }
 
-    # Risk level keywords with confidence scores
+    # Risk level keywords - extensive natural language phrases from Reddit, forums, real conversations
     RISK_KEYWORDS = {
         "very_conservative": {
-            "phrases": ["very conservative", "extremely conservative", "ultra safe",
-                       "scared of risk", "scared", "terrified", "hate risk", "no risk",
-                       "fear risk", "risk averse", "very safe", "super safe", "minimal risk",
-                       "can't afford to lose", "retirement money", "life savings",
-                       "don't like risk", "avoid risk", "zero risk"],
+            "phrases": [
+                # Direct statements
+                "very conservative", "extremely conservative", "ultra conservative",
+                "super conservative", "highly conservative", "totally conservative",
+                # Fear/anxiety expressions
+                "scared of risk", "scared of losing", "terrified of losing", "afraid of risk",
+                "fear of losing", "anxious about risk", "worried about losing", "nervous about risk",
+                "hate risk", "hate losing money", "can't stand risk", "can't handle losses",
+                "scared", "terrified", "petrified", "frightened",
+                # Safety seeking
+                "very safe", "super safe", "ultra safe", "extremely safe", "totally safe",
+                "as safe as possible", "safest possible", "maximum safety", "zero risk",
+                "no risk at all", "absolutely no risk", "minimal risk possible", "no risk",
+                # Life situation
+                "retirement money", "life savings", "can't afford to lose", "need this money",
+                "retiring soon", "about to retire", "fixed income", "on a pension",
+                "social security", "nest egg", "emergency fund", "rainy day fund",
+                # Sleep/peace of mind
+                "sleep at night", "peace of mind", "no stress", "stress free",
+                "don't want to worry", "set and forget safe", "boring is good",
+                # Age related
+                "too old for risk", "not young anymore", "older investor", "senior",
+                # Capital preservation
+                "preserve capital", "capital preservation", "protect principal",
+                "don't lose principal", "keep my money safe", "wealth preservation",
+                # Negative risk sentiment
+                "risk averse", "risk off", "avoid risk", "stay away from risk",
+                "don't like risk", "don't want risk", "no tolerance for risk",
+                "low risk tolerance", "very low risk tolerance", "zero risk tolerance",
+            ],
             "weight": 1.0
         },
         "conservative": {
-            "phrases": ["conservative", "safe", "low risk", "cautious", "careful",
-                       "preserve capital", "preservation", "stable", "secure", "protect",
-                       "not much risk", "little risk", "small risk", "prefer safe"],
+            "phrases": [
+                # Direct statements
+                "conservative", "somewhat conservative", "fairly conservative",
+                "pretty conservative", "lean conservative", "more conservative",
+                # Safety preference
+                "safe", "prefer safe", "prefer safety", "safety first", "on the safe side",
+                "play it safe", "rather be safe", "err on safe side",
+                # Low risk
+                "low risk", "lower risk", "less risk", "not much risk", "little risk",
+                "minimal risk", "limited risk", "small risk", "slight risk",
+                # Cautious
+                "cautious", "careful", "prudent", "sensible", "responsible",
+                "thoughtful", "measured", "calculated",
+                # Stability seeking
+                "stable", "stability", "steady", "consistent", "reliable", "predictable",
+                "secure", "security", "protect", "protection", "defensive",
+                # Income focus
+                "income focused", "dividend focused", "yield focused", "income investor",
+                "dividend investor", "steady income", "passive income", "cash flow",
+                # Blue chip
+                "blue chip", "blue chips only", "large cap only", "established companies",
+                "proven companies", "quality companies", "safe stocks",
+                # Bond preference
+                "mostly bonds", "prefer bonds", "bond heavy", "fixed income heavy",
+                "more bonds than stocks", "70 30 bonds", "60 40 bonds",
+                # Slow and steady
+                "slow and steady", "tortoise not hare", "steady wins race",
+                "not in a hurry", "patient investor", "long term safe",
+            ],
             "weight": 0.8
         },
         "moderate": {
-            "phrases": ["moderate", "balanced", "medium", "average", "normal",
-                       "some risk", "mix", "diversified", "middle ground",
-                       "okay with some risk", "bit of risk"],
+            "phrases": [
+                # Direct statements
+                "moderate", "medium", "middle", "average", "normal", "standard",
+                "typical", "regular", "ordinary", "conventional",
+                # Balanced
+                "balanced", "balance", "even split", "50 50", "sixty forty", "60 40",
+                "mix of both", "stocks and bonds", "diversified", "well rounded", "all around",
+                # Some risk acceptance
+                "some risk", "bit of risk", "little bit of risk", "moderate risk",
+                "medium risk", "acceptable risk", "reasonable risk", "manageable risk",
+                "okay with some risk", "can handle some risk", "tolerate some risk",
+                # Middle ground
+                "middle ground", "middle of road", "not too risky", "not too safe",
+                "somewhere in between", "in the middle", "happy medium",
+                # Unsure/neutral
+                "not sure", "unsure", "don't know", "idk", "uncertain", "undecided",
+                "no preference", "whatever you suggest", "recommend something",
+                "what do you think", "help me decide", "guide me", "you decide",
+                "up to you", "your call", "dealer's choice",
+                # Time horizon
+                "medium term", "5 to 10 years", "10 years", "few years",
+                # Growth and safety
+                "growth and safety", "growth with protection", "upside with protection",
+                "want both", "best of both", "growth and income",
+            ],
             "weight": 0.5
         },
         "aggressive": {
-            "phrases": ["aggressive", "growth", "risky", "high return", "high growth",
-                       "willing to risk", "can handle risk", "long term growth",
-                       "like risk", "love risk", "comfortable with risk", "okay with risk",
-                       "fine with risk", "don't mind risk", "can take risk", "risk taker",
-                       "higher returns", "maximize returns", "big returns", "good returns"],
+            "phrases": [
+                # Direct statements
+                "aggressive", "more aggressive", "fairly aggressive", "pretty aggressive",
+                "somewhat aggressive", "leaning aggressive", "on aggressive side",
+                # Risk acceptance
+                "like risk", "love risk", "enjoy risk", "embrace risk", "welcome risk",
+                "comfortable with risk", "okay with risk", "fine with risk", "handle risk",
+                "can take risk", "take on risk", "willing to risk", "accept risk",
+                "don't mind risk", "risk doesn't bother me", "risk is fine",
+                "higher risk tolerance", "high risk tolerance", "good risk tolerance",
+                "risk taker", "take risks", "i like taking risks",
+                # Growth focus
+                "growth", "growth focused", "growth investor", "growth stocks",
+                "capital appreciation", "capital gains", "maximize growth",
+                "high growth", "aggressive growth", "growth over income",
+                # Returns focus
+                "high returns", "higher returns", "big returns", "maximize returns",
+                "best returns", "outperform", "beat the market", "alpha",
+                "10 percent", "double digit returns", "20 percent returns",
+                "good returns", "great returns", "amazing returns",
+                # Age/time related
+                "young", "i'm young", "im young", "still young", "got time",
+                "long time horizon", "decades to invest", "30 years", "20 years",
+                "time on my side", "can wait it out", "can ride it out",
+                "just starting out", "early career", "in my 20s", "in my 30s",
+                # Tech/growth sectors
+                "tech stocks", "tech heavy", "technology", "innovation",
+                "disruptive", "emerging", "new economy", "future",
+                # Volatility acceptance
+                "can handle volatility", "volatility is fine", "don't mind swings",
+                "stomach for volatility", "ride the waves", "handle the ups and downs",
+                "can stomach losses", "can handle drawdowns",
+                # Reddit/casual phrases
+                "risk it for the biscuit", "no risk no reward", "gotta risk it",
+                "fortune favors the bold", "go big or go home", "send it",
+                "let it ride", "full send", "balls deep", "lfg", "let's go",
+                # Stock heavy
+                "all stocks", "100 percent stocks", "mostly stocks", "stock heavy",
+                "equities only", "no bonds", "skip the bonds", "stocks only",
+                "80 20 stocks", "90 10 stocks", "heavy equities",
+            ],
             "weight": 0.3
         },
         "very_aggressive": {
-            "phrases": ["very aggressive", "very risky", "maximum growth", "yolo",
-                       "high risk high reward", "speculative", "moon", "all in",
-                       "love high risk", "maximum risk", "go big", "swing for fences"],
+            "phrases": [
+                # Direct statements
+                "very aggressive", "extremely aggressive", "super aggressive",
+                "ultra aggressive", "highly aggressive", "max aggressive",
+                "most aggressive", "maximum aggression",
+                # YOLO culture (Reddit/WSB)
+                "yolo", "yoloing", "yolo it", "full yolo", "going yolo",
+                "to the moon", "moon", "mooning", "wen moon", "rocket", "rockets",
+                "ape", "ape in", "aping", "going ape", "diamond hands", "💎🙌",
+                "hodl", "hold the line", "never sell", "paper hands never",
+                "tendies", "wife's boyfriend", "this is the way", "the way",
+                "smooth brain", "wrinkle brain", "regarded", "autist",
+                "wallstreetbets", "wsb", "degenerates", "degen", "degenerate",
+                "casino", "gambling", "gamble", "bet it all", "all or nothing",
+                "sir this is a wendy's", "loss porn", "gain porn",
+                # Maximum risk
+                "maximum risk", "highest risk", "most risk possible", "full risk",
+                "extremely risky", "very risky", "super risky", "high risk high reward",
+                "risk it all", "risk everything", "nothing to lose", "house money",
+                # Speculation
+                "speculative", "speculation", "speculate", "punt", "punting",
+                "meme stocks", "meme coins", "penny stocks", "small caps only",
+                "micro caps", "options", "calls", "puts", "leveraged", "leverage",
+                "margin", "on margin", "3x", "2x leveraged", "weekly options",
+                "0dte", "fds", "lottos", "lotto tickets",
+                # All in mentality
+                "all in", "going all in", "everything on", "bet the farm",
+                "swing for fences", "home run", "10 bagger", "100 bagger",
+                "get rich", "get rich quick", "lambo", "wen lambo", "millionaire",
+                "generational wealth", "life changing money", "fuck you money",
+                # Crypto adjacent
+                "crypto style", "like crypto", "degen plays", "ape strong",
+                "ngmi", "wagmi", "gm", "probably nothing", "few understand",
+                # Youth/FOMO
+                "can afford to lose it all", "play money", "fun money",
+                "lottery ticket", "lotto", "fomo", "fear of missing out",
+                "cant miss this", "once in lifetime", "generational opportunity",
+            ],
             "weight": 0.1
         }
     }
