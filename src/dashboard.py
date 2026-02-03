@@ -620,21 +620,21 @@ class FinancialPlannerAI:
             "max_single_position": 0.15,
         },
         "conservative": {
-            "equity_range": (0.20, 0.40),
-            "bond_range": (0.40, 0.60),
-            "treasury_range": (0.10, 0.30),
+            "equity_range": (0.25, 0.45),
+            "bond_range": (0.35, 0.55),
+            "treasury_range": (0.10, 0.25),
             "max_single_position": 0.20,
         },
         "moderate": {
-            "equity_range": (0.40, 0.60),
-            "bond_range": (0.20, 0.40),
-            "treasury_range": (0.05, 0.20),
+            "equity_range": (0.55, 0.75),  # Increased equity for higher beta
+            "bond_range": (0.15, 0.30),
+            "treasury_range": (0.05, 0.15),
             "max_single_position": 0.25,
         },
         "aggressive": {
-            "equity_range": (0.60, 0.85),
-            "bond_range": (0.05, 0.25),
-            "treasury_range": (0.00, 0.15),
+            "equity_range": (0.75, 0.95),  # More equity
+            "bond_range": (0.00, 0.15),
+            "treasury_range": (0.00, 0.10),
             "max_single_position": 0.30,
         },
         "very_aggressive": {
@@ -1076,11 +1076,12 @@ class FinancialPlannerAI:
                 allocations["VGT"] = equity_alloc * 0.20   # Tech for higher beta
                 allocations["VXUS"] = equity_alloc * 0.15
             elif risk_level == "moderate":
-                # Balanced broad market
-                allocations["SPY"] = equity_alloc * 0.40
-                allocations["VTI"] = equity_alloc * 0.25
-                allocations["VXUS"] = equity_alloc * 0.20
-                allocations["SCHD"] = equity_alloc * 0.15  # Dividend for stability
+                # Balanced broad market with slight growth tilt
+                allocations["SPY"] = equity_alloc * 0.35
+                allocations["QQQ"] = equity_alloc * 0.20   # Add growth for higher beta
+                allocations["VTI"] = equity_alloc * 0.20
+                allocations["VXUS"] = equity_alloc * 0.15
+                allocations["SCHD"] = equity_alloc * 0.10  # Dividend for stability
             elif risk_level == "conservative":
                 # Defensive, dividend focused
                 allocations["VTI"] = equity_alloc * 0.30
