@@ -2071,25 +2071,41 @@ class SmartFinancialAgent:
         """Detect risk level from text with confidence score."""
         text_lower = text.lower()
 
-        # Check each risk level, starting from most specific
+        # PRIORITY 1: Check for exact word "moderate", "conservative", "aggressive" first
+        # This prevents fuzzy matching from overriding clear intent
+        if "moderate" in text_lower and "very" not in text_lower:
+            return "moderate", 0.95
+        if "conservative" in text_lower and "very" not in text_lower:
+            return "conservative", 0.95
+        if "aggressive" in text_lower and "very" not in text_lower:
+            return "aggressive", 0.95
+        if "very conservative" in text_lower:
+            return "very_conservative", 0.95
+        if "very aggressive" in text_lower:
+            return "very_aggressive", 0.95
+
+        # PRIORITY 2: Check for exact phrase matches
+        # Order: most extreme first, then moderate last (as fallback)
         for level in ["very_conservative", "very_aggressive", "conservative", "aggressive", "moderate"]:
             data = cls.RISK_KEYWORDS[level]
             for phrase in data["phrases"]:
-                if phrase in text_lower:
-                    return level, 0.9  # High confidence for exact phrase match
+                # Skip single common words that might cause false matches
+                if len(phrase) > 4 and phrase in text_lower:
+                    return level, 0.9
 
-        # Fuzzy matching for partial matches
+        # PRIORITY 3: Fuzzy matching for partial matches
         risk_scores = {}
         for level, data in cls.RISK_KEYWORDS.items():
             score = 0
             for phrase in data["phrases"]:
                 words = phrase.split()
-                matches = sum(1 for word in words if word in text_lower)
-                if matches > 0:
+                # Only count if at least half the words match
+                matches = sum(1 for word in words if word in text_lower and len(word) > 3)
+                if matches >= len(words) / 2:
                     score += matches / len(words)
             risk_scores[level] = score
 
-        if max(risk_scores.values()) > 0.3:
+        if max(risk_scores.values()) > 0.5:
             best_level = max(risk_scores, key=risk_scores.get)
             return best_level, risk_scores[best_level]
 
@@ -2663,11 +2679,20 @@ def _placeholder_for_removed_old_code():
 # ============================================================
 
 with st.sidebar:
-    # Logo
-    import os
-    logo_path = os.path.join(os.path.dirname(__file__), "..", "assets", "logo.png")
-    if os.path.exists(logo_path):
-        st.image(logo_path, width=150)
+    # Logo - try multiple paths
+    from pathlib import Path
+    possible_paths = [
+        Path(__file__).parent.parent / "assets" / "logo.png",
+        Path("assets/logo.png"),
+        Path("../assets/logo.png"),
+    ]
+    logo_displayed = False
+    for logo_path in possible_paths:
+        if logo_path.exists():
+            st.image(str(logo_path), width=180)
+            logo_displayed = True
+            break
+
     st.title("AI Financial Planner")
 
     # Show AI status
