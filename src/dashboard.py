@@ -3699,6 +3699,23 @@ with tab4:
                 df = pd.DataFrame(portfolio_data)
                 st.dataframe(df, use_container_width=True)
 
+                # Delete position section
+                st.markdown("**Remove Position:**")
+                del_col1, del_col2 = st.columns([3, 1])
+                with del_col1:
+                    # Create list of positions to delete
+                    position_options = [f"{pos.get('ticker', 'Unknown')} ({pos.get('side', 'Long')} {pos.get('quantity', 0)} @ ${pos.get('entry_price', 0):.2f})"
+                                       for pos in st.session_state.portfolio if pos.get("ticker")]
+                    if position_options:
+                        selected_position = st.selectbox("Select position to remove:", position_options, key="delete_position_select")
+                with del_col2:
+                    if position_options and st.button("🗑️ Remove", key="delete_position_btn", use_container_width=True):
+                        # Find and remove the selected position
+                        selected_idx = position_options.index(selected_position)
+                        removed = st.session_state.portfolio.pop(selected_idx)
+                        st.success(f"Removed {removed.get('ticker', 'position')}")
+                        st.rerun()
+
             # Summary metrics
             st.markdown("---")
             met_col1, met_col2, met_col3, met_col4 = st.columns(4)
