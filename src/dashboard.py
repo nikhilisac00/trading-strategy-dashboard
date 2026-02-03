@@ -692,13 +692,24 @@ class FinancialPlannerAI:
     @classmethod
     def get_stock_beta(cls, ticker: str) -> float:
         """Get REAL beta for a stock from yfinance."""
+        ticker_upper = ticker.upper()
+
+        # Treasury and Bond ETFs have near-zero beta (they're not correlated with stocks)
+        treasury_etfs = ["TLT", "IEF", "IEI", "SHY", "GOVT", "TIP", "VGSH", "VGIT", "VGLT", "SCHO", "SCHR"]
+        bond_etfs = ["BND", "AGG", "LQD", "HYG", "VCIT", "VCSH", "VCLT", "IGSB", "IGIB", "IGLB", "JNK", "USIG"]
+
+        if ticker_upper in treasury_etfs:
+            return 0.05  # Treasury ETFs have very low beta
+        if ticker_upper in bond_etfs:
+            return 0.15  # Corporate bond ETFs have slightly higher but still low beta
+
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
             beta = info.get("beta", None)
             if beta is not None:
                 return float(beta)
-            return 1.0  # Default to market beta if unavailable
+            return 1.0  # Default to market beta if unavailable for stocks
         except:
             return 1.0
 
