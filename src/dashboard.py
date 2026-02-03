@@ -1839,40 +1839,52 @@ class SmartFinancialAgent:
             "numbers": [],
         }
 
-        # Money patterns
+        text_lower = text.lower()
+
+        # Money patterns with multipliers - order matters!
+        # Pattern: $X million, X million dollars, $Xm, $X mil
         money_patterns = [
-            r'\$\s*([\d,]+(?:\.\d{2})?)\s*(?:million|m|M)?',
-            r'([\d,]+(?:\.\d{2})?)\s*(?:dollars?|USD)',
-            r'([\d,]+)\s*(?:k|K)\b',
+            # "$1 million" or "$1.5 million" or "1 million dollars"
+            (r'\$?\s*(\d+(?:\.\d+)?)\s*(?:million|mil)\b', 1000000),
+            # "$1m" or "1m" (but not in words like "I'm")
+            (r'\$\s*(\d+(?:\.\d+)?)\s*m\b', 1000000),
+            # "1 billion"
+            (r'\$?\s*(\d+(?:\.\d+)?)\s*(?:billion|bil|b)\b', 1000000000),
+            # "$100k" or "100k" or "$100 thousand"
+            (r'\$?\s*(\d+(?:\.\d+)?)\s*(?:k|thousand)\b', 1000),
+            # "$1,000,000" or "$100000" (plain numbers with $)
+            (r'\$\s*([\d,]+(?:\.\d{2})?)', 1),
+            # "1000000 dollars"
+            (r'([\d,]+(?:\.\d{2})?)\s*(?:dollars?|USD)', 1),
         ]
-        for pattern in money_patterns:
-            matches = re.findall(pattern, text, re.IGNORECASE)
+
+        found_amounts = set()
+        for pattern, multiplier in money_patterns:
+            matches = re.findall(pattern, text_lower)
             for match in matches:
                 try:
-                    amount = float(match.replace(',', ''))
-                    if 'k' in text.lower() and amount < 10000:
-                        amount *= 1000
-                    if 'million' in text.lower() or 'm' in text.lower():
-                        if amount < 1000:
-                            amount *= 1000000
+                    amount = float(match.replace(',', '')) * multiplier
                     if amount >= 1000:
-                        entities["money"].append(amount)
+                        found_amounts.add(amount)
                 except ValueError:
                     pass
+
+        entities["money"] = list(found_amounts)
 
         # Percentage patterns
         pct_matches = re.findall(r'(\d+(?:\.\d+)?)\s*%', text)
         entities["percentages"] = [float(p) for p in pct_matches]
 
-        # Large numbers (likely budgets)
-        large_nums = re.findall(r'\b(\d{4,})\b', text.replace(',', ''))
-        for num in large_nums:
-            try:
-                n = float(num)
-                if n >= 10000 and n not in entities["money"]:
-                    entities["money"].append(n)
-            except ValueError:
-                pass
+        # Large numbers (likely budgets) - only if no money found yet
+        if not entities["money"]:
+            large_nums = re.findall(r'\b(\d{5,})\b', text.replace(',', ''))
+            for num in large_nums:
+                try:
+                    n = float(num)
+                    if n >= 10000:
+                        entities["money"].append(n)
+                except ValueError:
+                    pass
 
         return entities
 
