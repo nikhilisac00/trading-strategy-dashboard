@@ -2409,6 +2409,20 @@ class SmartFinancialAgent:
                     st.session_state.user_profile = {"constraints": {}}
                 st.session_state.user_profile["risk_level"] = risk_level
                 st.session_state.user_profile["budget"] = budget
+
+                # Assign a random beta within the risk level's threshold
+                import random
+                beta_ranges = {
+                    "very_conservative": (0.10, 0.29),
+                    "conservative": (0.30, 0.54),
+                    "moderate": (0.55, 0.84),
+                    "aggressive": (0.85, 1.04),
+                    "very_aggressive": (1.05, 1.40),
+                }
+                beta_min, beta_max = beta_ranges.get(risk_level, (0.55, 0.84))
+                random_beta = round(random.uniform(beta_min, beta_max), 2)
+                st.session_state.user_profile["target_beta"] = random_beta
+
                 if return_target:
                     st.session_state.user_profile["return_target"] = return_target
                 if treasury_pct:
@@ -4003,77 +4017,14 @@ with tab4:
                 equity_pct = (equity_val / total_val * 100) if total_val > 0 else 0
                 bond_pct = (bond_val / total_val * 100) if total_val > 0 else 0
 
-                # Show match status
+                # Show match status (use beta slider above to rebalance)
                 if risk_match:
-                    st.success("✅ Portfolio matches your risk preference!")
+                    st.success("✅ Portfolio matches target!")
                 else:
-                    st.warning(f"⚠️ Portfolio is {actual_risk_label} but you selected {user_risk_display}")
-                    # Add rebalance button when there's a mismatch
-                    if st.button("🔄 Rebalance to Match Target", key="rebalance_to_target", use_container_width=True):
-                        # RECALCULATE current portfolio value FRESH from session state
-                        fresh_total = 0
-                        for pos in st.session_state.portfolio:
-                            qty = pos.get("quantity", 0)
-                            price = pos.get("entry_price", 100)
-                            fresh_total += qty * price
-                        current_value = fresh_total if fresh_total > 0 else 100000
+                    st.warning(f"⚠️ {actual_risk_label} vs {user_risk_display}")
+                    st.caption("Use beta slider above to rebalance")
 
-                        # Get user's target risk level
-                        target_risk = user_risk_level
-                        # Get any specific stocks user wants to keep
-                        current_tickers = [p.get("ticker") for p in st.session_state.portfolio if p.get("ticker")]
-                        # Keep individual stocks (not ETFs or algo-generated stocks) the user had
-                        # Include all ETFs and high-beta stocks used by the algorithm
-                        algo_tickers = [
-                            "SPY", "QQQ", "VTI", "VXUS", "VWO", "SCHD", "VNQ", "VGT", "IWM", "VIG",
-                            "TLT", "IEF", "SHY", "BND", "LQD", "HYG", "TIP", "AGG",
-                            "NVDA", "AMD", "TSLA"  # High-beta stocks used in very_aggressive
-                        ]
-                        user_stocks = [t for t in current_tickers if t not in algo_tickers]
-
-                        # Generate new portfolio matching target risk
-                        new_portfolio = FinancialPlannerAI.generate_portfolio(
-                            risk_level=target_risk,
-                            budget=current_value,
-                            specific_stocks=user_stocks if user_stocks else None
-                        )
-
-                        # Clear current portfolio and add new positions
-                        st.session_state.portfolio = []
-                        for pos in new_portfolio["positions"]:
-                            ticker = pos["ticker"]
-                            dollar_amount = pos.get("dollar_amount", 0)
-                            current_price = pos.get("current_price", 100)
-                            if current_price <= 0:
-                                current_price = 100
-                            quantity = int(dollar_amount / current_price) if current_price > 0 else 0
-                            if quantity > 0:
-                                pos_type = pos.get("type", "equity").lower()
-                                if pos_type == "stock":
-                                    display_type = "Stock"
-                                elif pos_type == "treasury":
-                                    display_type = "Treasury ETF"
-                                elif pos_type in ["bond", "corporate_bond", "high_yield"]:
-                                    display_type = "Bond ETF"
-                                else:
-                                    display_type = "ETF"
-
-                                position = {
-                                    "ticker": ticker,
-                                    "type": display_type,
-                                    "side": "Long",
-                                    "quantity": quantity,
-                                    "entry_price": current_price,
-                                    "entry_date": datetime.now().strftime("%Y-%m-%d"),
-                                    "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
-                                    "id": len(st.session_state.portfolio)
-                                }
-                                st.session_state.portfolio.append(position)
-
-                        st.success(f"✅ Portfolio rebalanced to {user_risk_display} risk profile!")
-                        st.rerun()
-
-                st.metric("Equity Allocation", f"{equity_pct:.0f}%")
+                st.metric("Equity", f"{equity_pct:.0f}%")
                 st.metric("Fixed Income", f"{bond_pct:.0f}%")
 
             # Individual position betas
