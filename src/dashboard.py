@@ -2850,10 +2850,73 @@ I can help you:
 # MAIN CONTENT
 # ============================================================
 
-st.title("🎯 Trading Strategy Dashboard")
-# Get risk profile from AI planner state
+# Custom CSS for better styling
+st.markdown("""
+<style>
+    /* Main header styling */
+    .main-header {
+        background: linear-gradient(90deg, #1a1a2e 0%, #16213e 50%, #0f3460 100%);
+        padding: 1.5rem;
+        border-radius: 10px;
+        margin-bottom: 1rem;
+    }
+    .main-header h1 {
+        color: #e94560;
+        margin: 0;
+    }
+    .main-header p {
+        color: #a0a0a0;
+        margin: 0.5rem 0 0 0;
+    }
+
+    /* Card styling */
+    .metric-card {
+        background: #1a1a2e;
+        padding: 1rem;
+        border-radius: 8px;
+        border-left: 4px solid #e94560;
+    }
+
+    /* Better tab styling */
+    .stTabs [data-baseweb="tab-list"] {
+        gap: 8px;
+    }
+    .stTabs [data-baseweb="tab"] {
+        padding: 10px 20px;
+        border-radius: 8px 8px 0 0;
+    }
+
+    /* Dataframe styling */
+    .stDataFrame {
+        border-radius: 8px;
+    }
+
+    /* Metric styling */
+    [data-testid="stMetricValue"] {
+        font-size: 1.8rem;
+    }
+
+    /* Sidebar styling */
+    .css-1d391kg {
+        background: linear-gradient(180deg, #1a1a2e 0%, #16213e 100%);
+    }
+</style>
+""", unsafe_allow_html=True)
+
+# Header
+st.markdown("# 🎯 Trading Strategy Dashboard")
 risk_profile = st.session_state.user_profile.get("risk_level", "moderate").replace("_", " ").title()
-st.markdown(f"*Risk Profile: **{risk_profile}** | Regime-aware strategy selection*")
+budget = st.session_state.user_profile.get("budget")
+budget_str = f" | Budget: ${budget:,.0f}" if budget else ""
+
+# Status bar
+status_col1, status_col2, status_col3 = st.columns([2, 2, 1])
+with status_col1:
+    st.markdown(f"**Risk Profile:** {risk_profile}")
+with status_col2:
+    st.markdown(f"**AI Status:** {'🟢 spaCy NLP Active' if SPACY_AVAILABLE else '🟡 Rule-based'}{budget_str}")
+with status_col3:
+    st.markdown(f"**Updated:** {datetime.now().strftime('%H:%M')}")
 
 # Load data
 try:
@@ -3546,71 +3609,203 @@ with tab4:
                 st.metric("Total P&L", f"${total_pnl:+,.2f}",
                          delta="Unrealized")
 
-            # Separate long and short positions
-            longs = [p for p in portfolio_data if p.get("Side") == "Long"]
-            shorts = [p for p in portfolio_data if p.get("Side") == "Short"]
+            # ============================================================
+            # PORTFOLIO ALLOCATION PIE CHART
+            # ============================================================
+            st.markdown("---")
+            st.subheader("Portfolio Allocation")
 
-            col_a, col_b = st.columns(2)
+            # Calculate actual values for pie chart
+            position_values = []
+            for pos in st.session_state.portfolio:
+                ticker = pos.get("ticker", "")
+                if "---" in pos.get("type", ""):
+                    continue
+                qty = pos.get("quantity", 0)
+                price = pos.get("entry_price", 100)
+                value = qty * price
+                if value > 0:
+                    position_values.append({
+                        "ticker": ticker,
+                        "value": value,
+                        "type": pos.get("type", "Stock")
+                    })
 
-            with col_a:
-                if longs:
-                    # Long positions pie chart
-                    try:
-                        fig = px.pie(
-                            values=[abs(float(p["P&L"].replace("$", "").replace(",", "").replace("+", ""))) + 100 for p in longs],
-                            names=[f"{p['Ticker']} ({p['Type']})" for p in longs],
-                            title="Long Positions"
-                        )
-                        fig.update_layout(height=300)
-                        st.plotly_chart(fig, use_container_width=True)
-                    except:
-                        pass
+            if position_values:
+                pie_col1, pie_col2 = st.columns(2)
 
-            with col_b:
-                if shorts:
-                    # Short positions pie chart
-                    try:
-                        fig = px.pie(
-                            values=[abs(float(p["P&L"].replace("$", "").replace(",", "").replace("+", ""))) + 100 for p in shorts],
-                            names=[f"{p['Ticker']} ({p['Type']})" for p in shorts],
-                            title="Short Positions"
-                        )
-                        fig.update_layout(height=300)
-                        st.plotly_chart(fig, use_container_width=True)
-                    except:
-                        pass
+                with pie_col1:
+                    # Allocation by position
+                    fig = px.pie(
+                        values=[p["value"] for p in position_values],
+                        names=[p["ticker"] for p in position_values],
+                        title="Allocation by Holding",
+                        hole=0.4,
+                        color_discrete_sequence=px.colors.qualitative.Set2
+                    )
+                    fig.update_layout(height=350, showlegend=True)
+                    fig.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig, use_container_width=True)
 
-            # Position type breakdown
-            st.subheader("Position Breakdown by Type")
-            type_counts = {}
-            for p in portfolio_data:
-                t = p.get("Type", "Other")
-                type_counts[t] = type_counts.get(t, 0) + 1
+                with pie_col2:
+                    # Allocation by asset type
+                    type_values = {}
+                    for p in position_values:
+                        t = p["type"]
+                        if "Stock" in t:
+                            category = "Stocks"
+                        elif "Treasury" in t or "TLT" in t or "IEF" in t or "SHY" in t:
+                            category = "Treasury"
+                        elif "Bond" in t or "LQD" in t or "HYG" in t:
+                            category = "Bonds"
+                        elif "ETF" in t:
+                            category = "ETFs"
+                        else:
+                            category = "Other"
+                        type_values[category] = type_values.get(category, 0) + p["value"]
 
-            if type_counts:
-                fig = px.bar(
-                    x=list(type_counts.keys()),
-                    y=list(type_counts.values()),
-                    title="Positions by Type",
-                    labels={"x": "Type", "y": "Count"}
+                    fig = px.pie(
+                        values=list(type_values.values()),
+                        names=list(type_values.keys()),
+                        title="Allocation by Asset Class",
+                        hole=0.4,
+                        color_discrete_sequence=px.colors.qualitative.Pastel
+                    )
+                    fig.update_layout(height=350, showlegend=True)
+                    fig.update_traces(textposition='inside', textinfo='percent+label')
+                    st.plotly_chart(fig, use_container_width=True)
+
+            # ============================================================
+            # RISK PROFILE & BETA TRACKER
+            # ============================================================
+            st.markdown("---")
+            st.subheader("Risk Profile & Beta Analysis")
+
+            # Calculate portfolio beta and risk metrics
+            portfolio_beta = FinancialPlannerAI.calculate_portfolio_beta(st.session_state.portfolio)
+
+            # Determine risk level based on beta
+            if portfolio_beta < 0.4:
+                risk_label = "Very Conservative"
+                risk_color = "green"
+                risk_emoji = "🛡️"
+            elif portfolio_beta < 0.7:
+                risk_label = "Conservative"
+                risk_color = "lightgreen"
+                risk_emoji = "🌿"
+            elif portfolio_beta < 1.0:
+                risk_label = "Moderate"
+                risk_color = "yellow"
+                risk_emoji = "⚖️"
+            elif portfolio_beta < 1.3:
+                risk_label = "Aggressive"
+                risk_color = "orange"
+                risk_emoji = "🔥"
+            else:
+                risk_label = "Very Aggressive"
+                risk_color = "red"
+                risk_emoji = "🚀"
+
+            risk_col1, risk_col2, risk_col3 = st.columns(3)
+
+            with risk_col1:
+                st.metric(
+                    "Portfolio Beta",
+                    f"{portfolio_beta:.2f}",
+                    delta=f"vs Market (1.0)",
+                    delta_color="off"
                 )
-                fig.update_layout(height=250)
-                st.plotly_chart(fig, use_container_width=True)
+                st.caption("Beta measures volatility relative to S&P 500")
 
-            # Clear portfolio button
-            if st.button("Clear All Positions"):
-                st.session_state.portfolio = []
-                st.rerun()
+            with risk_col2:
+                st.metric(
+                    "Risk Profile",
+                    f"{risk_emoji} {risk_label}",
+                )
+                # Risk gauge
+                beta_pct = min(100, max(0, (portfolio_beta / 2) * 100))
+                st.progress(beta_pct / 100)
+                st.caption(f"Risk Level: {beta_pct:.0f}%")
+
+            with risk_col3:
+                # Calculate allocation percentages
+                total_val = sum(p["value"] for p in position_values) if position_values else 0
+                equity_val = sum(p["value"] for p in position_values if "Stock" in p.get("type", "") or "ETF" in p.get("type", "")) if position_values else 0
+                bond_val = sum(p["value"] for p in position_values if "Bond" in p.get("type", "") or "Treasury" in p.get("type", "")) if position_values else 0
+
+                equity_pct = (equity_val / total_val * 100) if total_val > 0 else 0
+                bond_pct = (bond_val / total_val * 100) if total_val > 0 else 0
+
+                st.metric("Equity Allocation", f"{equity_pct:.0f}%")
+                st.metric("Fixed Income", f"{bond_pct:.0f}%")
+
+            # Individual position betas
+            st.markdown("#### Individual Position Betas")
+            beta_data = []
+            for pos in st.session_state.portfolio:
+                ticker = pos.get("ticker", "")
+                if not ticker or "---" in pos.get("type", ""):
+                    continue
+                beta = FinancialPlannerAI.get_stock_beta(ticker)
+                qty = pos.get("quantity", 0)
+                price = pos.get("entry_price", 100)
+                value = qty * price
+                weight = (value / total_val * 100) if total_val > 0 else 0
+                contribution = beta * weight / 100
+
+                beta_data.append({
+                    "Ticker": ticker,
+                    "Beta": f"{beta:.2f}",
+                    "Weight": f"{weight:.1f}%",
+                    "Beta Contribution": f"{contribution:.3f}"
+                })
+
+            if beta_data:
+                beta_df = pd.DataFrame(beta_data)
+                st.dataframe(beta_df, use_container_width=True, hide_index=True)
+
+            # ============================================================
+            # ACTIONS
+            # ============================================================
+            st.markdown("---")
+            action_col1, action_col2 = st.columns(2)
+            with action_col1:
+                if st.button("🗑️ Clear All Positions", use_container_width=True):
+                    st.session_state.portfolio = []
+                    st.rerun()
+            with action_col2:
+                if st.button("🔄 Refresh Prices", use_container_width=True):
+                    st.cache_data.clear()
+                    st.rerun()
+
         else:
-            st.info("No positions yet. Add a position to start tracking.")
+            # Empty portfolio state
+            st.markdown("---")
+            st.info("📊 **No positions yet.** Add positions using the form on the left, or ask the AI Financial Planner to create a portfolio for you!")
 
-            # Quick add suggestions
-            st.markdown("### Quick Add Suggestions")
-            st.markdown("""
-            **Equities:** SPY, QQQ, AAPL, MSFT, NVDA
-            **Fixed Income:** TLT (20Y Treasury), IEF (7-10Y), SHY (1-3Y), LQD (Corp), HYG (High Yield)
-            **Options:** Enter any stock ticker, select Call/Put option
-            """)
+            st.markdown("### Quick Start Ideas")
+            col_a, col_b, col_c = st.columns(3)
+            with col_a:
+                st.markdown("""
+                **📈 Equities**
+                - SPY (S&P 500)
+                - QQQ (Nasdaq)
+                - VTI (Total Market)
+                """)
+            with col_b:
+                st.markdown("""
+                **🏦 Fixed Income**
+                - TLT (20Y Treasury)
+                - IEF (7-10Y Treasury)
+                - LQD (Corp Bonds)
+                """)
+            with col_c:
+                st.markdown("""
+                **💡 Try the AI**
+                - "I'm aggressive with $100k"
+                - "Conservative, want dividends"
+                - "Balanced 60/40 portfolio"
+                """)
 
 # ============================================================
 # TAB 5: PORTFOLIO PERFORMANCE
