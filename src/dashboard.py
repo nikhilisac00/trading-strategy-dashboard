@@ -2167,21 +2167,65 @@ class SmartFinancialAgent:
 
     @classmethod
     def extract_raw_tickers(cls, text: str) -> list:
-        """Extract potential stock tickers (2-5 uppercase letters) from text."""
-        # Find all uppercase words that look like tickers
-        potential_tickers = re.findall(r'\b([A-Z]{2,5})\b', text)
+        """Extract potential stock tickers from text - handles multiple tickers with and/or/commas."""
+        valid_tickers = []
 
-        # Filter out common words that aren't tickers
+        # Common words to filter out (not tickers)
         non_tickers = {'I', 'A', 'THE', 'AND', 'OR', 'FOR', 'TO', 'IN', 'ON', 'AT', 'BY',
                        'AN', 'AS', 'IF', 'IT', 'OF', 'UP', 'DO', 'GO', 'SO', 'NO', 'US',
                        'AM', 'PM', 'OK', 'HI', 'MY', 'ME', 'WE', 'HE', 'BE', 'IS', 'ARE',
-                       'WAS', 'HAS', 'HAD', 'BUT', 'NOT', 'ALL', 'CAN', 'HER', 'WAS',
-                       'ONE', 'OUR', 'OUT', 'YOU', 'DAY', 'GET', 'HAS', 'HIM', 'HIS',
+                       'WAS', 'HAS', 'HAD', 'BUT', 'NOT', 'ALL', 'CAN', 'HER', 'WANT',
+                       'ONE', 'OUR', 'OUT', 'YOU', 'DAY', 'GET', 'HIM', 'HIS', 'LIKE',
                        'HOW', 'ITS', 'LET', 'MAY', 'NEW', 'NOW', 'OLD', 'SEE', 'WAY',
                        'WHO', 'BOY', 'DID', 'OWN', 'SAY', 'SHE', 'TOO', 'USE', 'USD',
-                       'ETF', 'CEO', 'CFO', 'IPO', 'USA', 'NYC', 'API'}
+                       'ETF', 'CEO', 'CFO', 'IPO', 'USA', 'NYC', 'API', 'WITH', 'ALSO',
+                       'SOME', 'ANY', 'HAVE', 'THIS', 'THAT', 'FROM', 'BEEN', 'WILL',
+                       'INTO', 'JUST', 'ONLY', 'OVER', 'SUCH', 'MAKE', 'THAN', 'THEM',
+                       'WELL', 'BACK', 'YEAR', 'WHEN', 'YOUR', 'WHAT', 'THEN', 'LOOK'}
 
-        valid_tickers = [t for t in potential_tickers if t not in non_tickers]
+        # 1. Find ALL CAPS tickers (2-5 letters)
+        uppercase_tickers = re.findall(r'\b([A-Z]{2,5})\b', text)
+        for t in uppercase_tickers:
+            if t not in non_tickers and t not in valid_tickers:
+                valid_tickers.append(t)
+
+        # 2. Find tickers after "like", "want", "love", "buy", etc. - even if lowercase
+        # Pattern: "I like oklo and nvda" or "want tsla or aapl"
+        ticker_context_patterns = [
+            r'(?:like|love|want|buy|get|add|prefer|into|own|hold|holding)\s+([a-zA-Z]{2,5})(?:\s+(?:and|or|,)\s+([a-zA-Z]{2,5}))*',
+            r'(?:like|love|want|buy|get|add|prefer|into|own|hold|holding)\s+([a-zA-Z]{2,5})\s+(?:and|or|,)\s+([a-zA-Z]{2,5})',
+            r'([a-zA-Z]{2,5})\s+(?:and|or|,)\s+([a-zA-Z]{2,5})\s+(?:stock|stocks|shares)',
+        ]
+
+        for pattern in ticker_context_patterns:
+            matches = re.findall(pattern, text, re.IGNORECASE)
+            for match in matches:
+                if isinstance(match, tuple):
+                    for t in match:
+                        if t and t.upper() not in non_tickers and t.upper() not in valid_tickers:
+                            valid_tickers.append(t.upper())
+                elif match:
+                    if match.upper() not in non_tickers and match.upper() not in valid_tickers:
+                        valid_tickers.append(match.upper())
+
+        # 3. Find comma/and/or separated lists of potential tickers
+        # "OKLO, NVDA, TSLA" or "oklo and nvda and tsla" or "tsla or aapl"
+        list_pattern = r'\b([a-zA-Z]{2,5})\s*(?:,|and|or|\&)\s*([a-zA-Z]{2,5})(?:\s*(?:,|and|or|\&)\s*([a-zA-Z]{2,5}))?(?:\s*(?:,|and|or|\&)\s*([a-zA-Z]{2,5}))?'
+        list_matches = re.findall(list_pattern, text, re.IGNORECASE)
+        for match in list_matches:
+            for t in match:
+                if t and len(t) >= 2 and t.upper() not in non_tickers and t.upper() not in valid_tickers:
+                    # Additional check: if it looks like a sentence word, skip it
+                    if t.lower() not in ['like', 'want', 'have', 'some', 'with', 'also', 'just', 'into', 'from']:
+                        valid_tickers.append(t.upper())
+
+        # 4. Also check for tickers mentioned with "stock" or "stocks"
+        stock_pattern = r'([a-zA-Z]{2,5})\s+(?:stock|stocks|shares|share)'
+        stock_matches = re.findall(stock_pattern, text, re.IGNORECASE)
+        for t in stock_matches:
+            if t.upper() not in non_tickers and t.upper() not in valid_tickers:
+                valid_tickers.append(t.upper())
+
         return valid_tickers
 
     @classmethod
