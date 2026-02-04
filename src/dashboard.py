@@ -4030,10 +4030,39 @@ with tab4:
                     "Calculated Risk",
                     f"{actual_risk_emoji} {actual_risk_label}",
                 )
-                # Risk gauge
-                beta_pct = min(100, max(0, (portfolio_beta / 2) * 100))
-                st.progress(beta_pct / 100)
-                st.caption(f"Risk Level: {beta_pct:.0f}%")
+
+                # Calculate Expected Portfolio Return
+                expected_return = 0
+                total_weight = 0
+                for pos in st.session_state.portfolio:
+                    ticker = pos.get("ticker", "")
+                    if not ticker or "---" in pos.get("type", ""):
+                        continue
+                    qty = pos.get("quantity", 0)
+                    price = pos.get("entry_price", 100)
+                    value = qty * price
+                    weight = value
+
+                    # Get expected return from ASSET_CLASSES or estimate from beta
+                    if ticker in FinancialPlannerAI.ASSET_CLASSES:
+                        exp_ret = FinancialPlannerAI.ASSET_CLASSES[ticker].get("expected_return", 0.08)
+                    else:
+                        # Estimate: risk-free (4%) + beta * market premium (6%)
+                        beta = FinancialPlannerAI.get_stock_beta(ticker)
+                        exp_ret = 0.04 + beta * 0.06
+
+                    expected_return += weight * exp_ret
+                    total_weight += weight
+
+                if total_weight > 0:
+                    expected_return = expected_return / total_weight
+
+                st.metric(
+                    "Expected Return",
+                    f"{expected_return*100:.1f}%",
+                    delta="annual",
+                    delta_color="off"
+                )
 
             with risk_col3:
                 st.markdown("##### Risk Alignment")
