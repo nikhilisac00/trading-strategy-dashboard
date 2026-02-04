@@ -2125,17 +2125,19 @@ class SmartFinancialAgent:
             if phrase in text_lower:
                 return "very_conservative", 0.98
 
-        # PRIORITY 1: Check for exact word "moderate", "conservative", "aggressive"
-        # This prevents fuzzy matching from overriding clear intent
+        # PRIORITY 1: Check for explicit risk level words
+        # Order: "very" variants first, then "moderate" (to catch "moderate risk" before "aggressive" phrases)
         if "very conservative" in text_lower:
             return "very_conservative", 0.95
         if "very aggressive" in text_lower:
             return "very_aggressive", 0.95
-        if "moderate" in text_lower and "very" not in text_lower:
+        # Check "moderate" BEFORE other single-word levels
+        # This ensures "I am moderate risk" doesn't accidentally match "aggressive" phrases
+        if "moderate" in text_lower:
             return "moderate", 0.95
-        if "conservative" in text_lower and "very" not in text_lower:
+        if "conservative" in text_lower:
             return "conservative", 0.95
-        if "aggressive" in text_lower and "very" not in text_lower:
+        if "aggressive" in text_lower:
             return "aggressive", 0.95
 
         # PRIORITY 2: Check for exact phrase matches
