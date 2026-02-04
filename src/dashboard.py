@@ -2414,6 +2414,12 @@ class SmartFinancialAgent:
                 # This ensures their stated preference is reflected in the target beta
                 # (User can still override with slider later if they want exact control)
                 import random
+                # Beta ranges - ensuring no overlap and clear boundaries
+                # Very Conservative: < 0.30
+                # Conservative: 0.30 - 0.54
+                # Moderate: 0.55 - 0.84
+                # Aggressive: 0.85 - 1.04
+                # Very Aggressive: >= 1.05
                 beta_ranges = {
                     "very_conservative": (0.10, 0.29),
                     "conservative": (0.30, 0.54),
@@ -2422,7 +2428,9 @@ class SmartFinancialAgent:
                     "very_aggressive": (1.05, 1.40),
                 }
                 beta_min, beta_max = beta_ranges.get(risk_level, (0.55, 0.84))
-                random_beta = round(random.uniform(beta_min, beta_max), 2)
+                # Generate random beta and CLAMP to ensure it stays within bounds
+                raw_beta = random.uniform(beta_min, beta_max)
+                random_beta = round(max(beta_min, min(beta_max, raw_beta)), 2)
                 st.session_state.user_profile["target_beta"] = random_beta
 
                 if return_target:
