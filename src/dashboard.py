@@ -538,10 +538,34 @@ def get_historical_portfolio_performance(positions: list, period: str = "1mo"):
     df = pd.DataFrame(daily_values)
     df.set_index("date", inplace=True)
 
-    # Calculate returns
-    start_value = df["value"].iloc[0]
-    end_value = df["value"].iloc[-1]
-    total_return = (end_value - start_value) / abs(start_value) * 100 if start_value != 0 else 0
+    # Drop any rows with NaN values
+    df = df.dropna()
+
+    if df.empty:
+        return None
+
+    # Calculate returns - ensure no NaN
+    try:
+        start_value = float(df["value"].iloc[0])
+        end_value = float(df["value"].iloc[-1])
+
+        # Check for NaN
+        if pd.isna(start_value) or pd.isna(end_value):
+            start_value = 0 if pd.isna(start_value) else start_value
+            end_value = 0 if pd.isna(end_value) else end_value
+
+        if start_value != 0 and not pd.isna(start_value):
+            total_return = (end_value - start_value) / abs(start_value) * 100
+        else:
+            total_return = 0
+
+        # Final NaN check
+        if pd.isna(total_return):
+            total_return = 0
+    except:
+        start_value = 0
+        end_value = 0
+        total_return = 0
 
     return {
         "history": df,
@@ -4209,17 +4233,26 @@ with tab5:
         perf_data = get_historical_portfolio_performance(st.session_state.portfolio, time_period)
 
         if perf_data and perf_data.get("history") is not None and not perf_data["history"].empty:
-            # Safely get values, defaulting to 0 if NaN
-            start_val = perf_data['start_value']
-            end_val = perf_data['end_value']
-            total_ret = perf_data['total_return']
-
-            # Handle NaN values
-            if pd.isna(start_val):
+            # Safely get values - convert to float and handle NaN/None
+            try:
+                start_val = float(perf_data.get('start_value', 0) or 0)
+                if pd.isna(start_val) or start_val != start_val:  # NaN check
+                    start_val = 0
+            except:
                 start_val = 0
-            if pd.isna(end_val):
+
+            try:
+                end_val = float(perf_data.get('end_value', 0) or 0)
+                if pd.isna(end_val) or end_val != end_val:
+                    end_val = 0
+            except:
                 end_val = 0
-            if pd.isna(total_ret):
+
+            try:
+                total_ret = float(perf_data.get('total_return', 0) or 0)
+                if pd.isna(total_ret) or total_ret != total_ret:
+                    total_ret = 0
+            except:
                 total_ret = 0
 
             col1, col2, col3, col4 = st.columns(4)
@@ -4234,17 +4267,26 @@ with tab5:
                 # Annualized return (approximate)
                 period_days = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "YTD": 180}
                 days = period_days.get(time_period, 30)
-                if days > 0 and start_val > 0:
-                    annualized = ((end_val / start_val) ** (365/days) - 1) * 100
-                    st.metric("Annualized", f"{annualized:+.2f}%")
-                else:
+                try:
+                    if days > 0 and start_val > 0 and end_val > 0:
+                        annualized = ((end_val / start_val) ** (365/days) - 1) * 100
+                        if pd.isna(annualized) or annualized != annualized:
+                            st.metric("Annualized", "N/A")
+                        else:
+                            st.metric("Annualized", f"{annualized:+.2f}%")
+                    else:
+                        st.metric("Annualized", "N/A")
+                except:
                     st.metric("Annualized", "N/A")
+
+            # Clean history data - drop any NaN values
+            clean_history = perf_data["history"].dropna()
 
             # Performance chart
             fig = go.Figure()
             fig.add_trace(go.Scatter(
-                x=perf_data["history"].index,
-                y=perf_data["history"]["value"],
+                x=clean_history.index,
+                y=clean_history["value"],
                 mode='lines',
                 name='Portfolio Value',
                 line=dict(color='cyan', width=2),
@@ -4252,13 +4294,14 @@ with tab5:
                 fillcolor='rgba(0, 255, 255, 0.1)'
             ))
 
-            # Add starting value line
-            fig.add_hline(
-                y=perf_data['start_value'],
-                line_dash="dash",
-                line_color="yellow",
-                annotation_text=f"Starting: ${perf_data['start_value']:,.0f}"
-            )
+            # Add starting value line (only if valid)
+            if start_val > 0:
+                fig.add_hline(
+                    y=start_val,
+                    line_dash="dash",
+                    line_color="yellow",
+                    annotation_text=f"Starting: ${start_val:,.0f}"
+                )
 
             fig.update_layout(
                 title=f"Portfolio Value ({time_period})",
