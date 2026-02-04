@@ -4061,42 +4061,47 @@ with tab4:
                 st.metric("Equity", f"{equity_pct:.0f}%")
                 st.metric("Fixed Income", f"{bond_pct:.0f}%")
 
-            # Expected Portfolio Return - prominent display
+            # ============================================================
+            # EXPECTED PORTFOLIO RETURN - Prominent Display
+            # ============================================================
             st.markdown("---")
-            exp_ret_col1, exp_ret_col2, exp_ret_col3 = st.columns([1, 2, 1])
-            with exp_ret_col2:
-                # Calculate Expected Portfolio Return
-                expected_return = 0
-                total_weight = 0
-                for pos in st.session_state.portfolio:
-                    ticker = pos.get("ticker", "")
-                    if not ticker or "---" in pos.get("type", ""):
-                        continue
-                    qty = pos.get("quantity", 0)
-                    price = pos.get("entry_price", 100)
-                    value = qty * price
+            st.subheader("📈 Expected Portfolio Return")
 
-                    # Get expected return from ASSET_CLASSES or estimate from beta
-                    if ticker in FinancialPlannerAI.ASSET_CLASSES:
-                        exp_ret = FinancialPlannerAI.ASSET_CLASSES[ticker].get("expected_return", 0.08)
-                    else:
-                        # Estimate: risk-free (4%) + beta * market premium (6%)
-                        beta = FinancialPlannerAI.get_stock_beta(ticker)
-                        exp_ret = 0.04 + beta * 0.06
+            # Calculate Expected Portfolio Return
+            expected_return = 0
+            total_weight = 0
+            for pos in st.session_state.portfolio:
+                ticker = pos.get("ticker", "")
+                if not ticker or "---" in pos.get("type", ""):
+                    continue
+                qty = pos.get("quantity", 0)
+                price = pos.get("entry_price", 100)
+                value = qty * price
 
-                    expected_return += value * exp_ret
-                    total_weight += value
+                # Get expected return from ASSET_CLASSES or estimate from beta
+                if ticker in FinancialPlannerAI.ASSET_CLASSES:
+                    exp_ret = FinancialPlannerAI.ASSET_CLASSES[ticker].get("expected_return", 0.08)
+                else:
+                    # Estimate: risk-free (4%) + beta * market premium (6%)
+                    beta = FinancialPlannerAI.get_stock_beta(ticker)
+                    exp_ret = 0.04 + beta * 0.06
 
-                if total_weight > 0:
-                    expected_return = expected_return / total_weight
+                expected_return += value * exp_ret
+                total_weight += value
 
-                st.markdown("##### 📈 Expected Portfolio Return")
+            if total_weight > 0:
+                expected_return = expected_return / total_weight
+
+            # Display in a centered, prominent way
+            ret_col1, ret_col2, ret_col3 = st.columns([1, 2, 1])
+            with ret_col2:
                 st.metric(
-                    "Annual Return",
+                    "Annual Expected Return",
                     f"{expected_return*100:.1f}%",
-                    delta=f"Based on historical data & CAPM",
+                    delta="Based on CAPM: Rf (4%) + β × Market Premium (6%)",
                     delta_color="off"
                 )
+                st.caption("Note: This is a theoretical estimate based on historical beta and market assumptions.")
 
             # Individual position betas
             st.markdown("#### Individual Position Betas")
