@@ -2468,6 +2468,20 @@ class SmartFinancialAgent:
                 # Generate random beta and CLAMP to ensure it stays within bounds
                 raw_beta = random.uniform(beta_min, beta_max)
                 random_beta = round(max(beta_min, min(beta_max, raw_beta)), 2)
+
+                # VALIDATION: Ensure beta matches risk level (defensive check)
+                # If somehow wrong, force to middle of correct range
+                if risk_level == "moderate" and (random_beta < 0.55 or random_beta >= 0.85):
+                    random_beta = 0.70  # Force to moderate middle
+                elif risk_level == "conservative" and (random_beta < 0.30 or random_beta >= 0.55):
+                    random_beta = 0.42
+                elif risk_level == "aggressive" and (random_beta < 0.85 or random_beta >= 1.05):
+                    random_beta = 0.95
+                elif risk_level == "very_conservative" and random_beta >= 0.30:
+                    random_beta = 0.20
+                elif risk_level == "very_aggressive" and random_beta < 1.05:
+                    random_beta = 1.20
+
                 st.session_state.user_profile["target_beta"] = random_beta
 
                 if return_target:
