@@ -512,10 +512,15 @@ def get_historical_portfolio_performance(positions: list, period: str = "1mo"):
     daily_values = []
     for date in all_dates:
         total_value = 0
+        valid_data = True
         for ticker, data in position_data.items():
             hist = data["history"]
             if date in hist.index:
                 price = hist.loc[date, "Close"]
+                # Skip if price is NaN
+                if pd.isna(price):
+                    valid_data = False
+                    break
                 quantity = data["quantity"]
                 if data["side"] == "Short":
                     # Short position value = entry_price * qty - current_price * qty
@@ -524,7 +529,7 @@ def get_historical_portfolio_performance(positions: list, period: str = "1mo"):
                     value = price * quantity
                 total_value += value
 
-        if total_value != 0:
+        if valid_data and total_value != 0:
             daily_values.append({"date": date, "value": total_value})
 
     if not daily_values:
@@ -4204,22 +4209,36 @@ with tab5:
         perf_data = get_historical_portfolio_performance(st.session_state.portfolio, time_period)
 
         if perf_data and perf_data.get("history") is not None and not perf_data["history"].empty:
+            # Safely get values, defaulting to 0 if NaN
+            start_val = perf_data['start_value']
+            end_val = perf_data['end_value']
+            total_ret = perf_data['total_return']
+
+            # Handle NaN values
+            if pd.isna(start_val):
+                start_val = 0
+            if pd.isna(end_val):
+                end_val = 0
+            if pd.isna(total_ret):
+                total_ret = 0
+
             col1, col2, col3, col4 = st.columns(4)
 
             with col1:
-                st.metric("Starting Value", f"${perf_data['start_value']:,.2f}")
+                st.metric("Starting Value", f"${start_val:,.2f}")
             with col2:
-                st.metric("Current Value", f"${perf_data['end_value']:,.2f}")
+                st.metric("Current Value", f"${end_val:,.2f}")
             with col3:
-                color = "normal" if perf_data['total_return'] >= 0 else "inverse"
-                st.metric("Total Return", f"{perf_data['total_return']:+.2f}%")
+                st.metric("Total Return", f"{total_ret:+.2f}%")
             with col4:
                 # Annualized return (approximate)
                 period_days = {"1M": 30, "3M": 90, "6M": 180, "1Y": 365, "YTD": 180}
                 days = period_days.get(time_period, 30)
-                if days > 0 and perf_data['start_value'] != 0:
-                    annualized = ((perf_data['end_value'] / perf_data['start_value']) ** (365/days) - 1) * 100
+                if days > 0 and start_val > 0:
+                    annualized = ((end_val / start_val) ** (365/days) - 1) * 100
                     st.metric("Annualized", f"{annualized:+.2f}%")
+                else:
+                    st.metric("Annualized", "N/A")
 
             # Performance chart
             fig = go.Figure()
@@ -4347,50 +4366,6 @@ with tab5:
                     for period, value in projections.items():
                         gain = value - current_val
                         st.write(f"**{period}:** ${value:,.0f} (+${gain:,.0f})")
-
-        st.markdown("---")
-
-        # Rebalancing Section
-        st.markdown("### Portfolio Rebalancing")
-
-        analysis = FinancialPlannerAI.analyze_portfolio_for_rebalancing(st.session_state.portfolio)
-
-        col1, col2 = st.columns(2)
-
-        with col1:
-            st.markdown("#### Current Allocation")
-            current = analysis.get("current_allocation", {})
-
-            # Pie chart of current allocation
-            if current:
-                fig = go.Figure(data=[go.Pie(
-                    labels=['Equities', 'Treasury', 'Bonds'],
-                    values=[
-                        current.get('equity', 0) * 100,
-                        current.get('treasury', 0) * 100,
-                        current.get('bond', 0) * 100
-                    ],
-                    marker_colors=['#00ff00', '#0088ff', '#ff8800'],
-                    hole=0.4
-                )])
-                fig.update_layout(height=300, title="Current Allocation")
-                st.plotly_chart(fig, use_container_width=True)
-
-        with col2:
-            st.markdown("#### Rebalancing Suggestions")
-
-            if analysis["needs_rebalancing"]:
-                st.warning("⚠️ Rebalancing recommended")
-                for suggestion in analysis["suggestions"]:
-                    st.markdown(f"- {suggestion}")
-
-                st.markdown("---")
-                st.markdown("**To rebalance, tell the AI advisor:**")
-                st.code("Rebalance my portfolio", language=None)
-                st.markdown("Then say **'execute rebalancing'** to implement.")
-            else:
-                st.success("✅ Portfolio is well-balanced!")
-                st.markdown("No rebalancing needed at this time.")
 
 # ============================================================
 # TAB 6: CHARTS
