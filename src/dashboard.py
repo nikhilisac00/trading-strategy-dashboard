@@ -675,12 +675,18 @@ class FinancialPlannerAI:
     }
 
     # Risk profiles linked to target Beta (calibrated for achievable ETF portfolios)
+    # IMPORTANT: No overlap between ranges - clean boundaries
+    # Very Conservative: < 0.30
+    # Conservative: 0.30 - 0.54
+    # Moderate: 0.55 - 0.84
+    # Aggressive: 0.85 - 1.04
+    # Very Aggressive: >= 1.05
     BETA_TARGETS = {
-        "very_conservative": {"min": 0.05, "max": 0.3, "target": 0.15},
-        "conservative": {"min": 0.25, "max": 0.55, "target": 0.4},
-        "moderate": {"min": 0.5, "max": 0.85, "target": 0.7},
-        "aggressive": {"min": 0.8, "max": 1.05, "target": 0.95},
-        "very_aggressive": {"min": 1.0, "max": 1.5, "target": 1.15},
+        "very_conservative": {"min": 0.05, "max": 0.29, "target": 0.15},
+        "conservative": {"min": 0.30, "max": 0.54, "target": 0.42},
+        "moderate": {"min": 0.55, "max": 0.84, "target": 0.70},
+        "aggressive": {"min": 0.85, "max": 1.04, "target": 0.95},
+        "very_aggressive": {"min": 1.05, "max": 1.50, "target": 1.20},
     }
 
     # Bond ETF risk metrics: duration (interest rate sensitivity), convexity, spread duration (credit)
