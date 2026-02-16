@@ -647,11 +647,19 @@ def main():
     returns_df = compare_returns(stock_data, all_tickers, CHATGPT_LAUNCH)
     print(returns_df.to_string(index=False))
 
-    # Step 4: Entropy analysis
+    # Step 4: Entropy analysis (with live market cap data when available)
     print("\n[3] Sector Entropy Analysis:")
-    # Approximate S&P 500 sector weights (illustrative)
-    weights_nov2022 = [0.20, 0.10, 0.12, 0.05, 0.15, 0.08, 0.03, 0.03, 0.03, 0.08]  # ~87% + other
-    weights_nov2024 = [0.32, 0.08, 0.10, 0.04, 0.12, 0.08, 0.02, 0.03, 0.02, 0.07]  # Mag 7 up
+    print("  Fetching live sector weights via ETF market caps...")
+    try:
+        from validate_thesis import fetch_sector_weights_by_marketcap, WEIGHTS_NOV_2022_FALLBACK
+        weights_after_dict = fetch_sector_weights_by_marketcap()
+        weights_nov2024 = list(weights_after_dict.values())
+        weights_nov2022 = list(WEIGHTS_NOV_2022_FALLBACK.values())
+        print(f"  Sectors: {list(weights_after_dict.keys())}")
+    except Exception as e:
+        print(f"  Live fetch failed ({e}), using hardcoded weights")
+        weights_nov2022 = [0.20, 0.10, 0.12, 0.05, 0.15, 0.08, 0.03, 0.03, 0.03, 0.08]
+        weights_nov2024 = [0.32, 0.08, 0.10, 0.04, 0.12, 0.08, 0.02, 0.03, 0.02, 0.07]
 
     analysis = entropy_change_analysis(weights_nov2022, weights_nov2024)
     print(f"  Entropy (Nov 2022): {analysis['entropy_before']:.3f} bits")

@@ -37,7 +37,26 @@ except ImportError:
     SPACY_AVAILABLE = False
     nlp = None
 
-# Ollama for local LLM (free, runs locally)
+# OpenAI ChatGPT integration
+OPENAI_AVAILABLE = False
+openai_client = None
+try:
+    import openai
+    # Try Streamlit secrets first, then env var
+    _openai_key = None
+    try:
+        _openai_key = st.secrets.get("OPENAI_API_KEY")
+    except Exception:
+        pass
+    if not _openai_key:
+        _openai_key = os.environ.get("OPENAI_API_KEY")
+    if _openai_key:
+        openai_client = openai.OpenAI(api_key=_openai_key)
+        OPENAI_AVAILABLE = True
+except ImportError:
+    pass
+
+# Ollama for local LLM (free, runs locally) — fallback if no OpenAI key
 OLLAMA_AVAILABLE = False
 OLLAMA_MODEL = "llama3.2"  # Default model, can be changed
 
@@ -2430,6 +2449,269 @@ class SmartFinancialAgent:
 
         return None
 
+    # DRIVER framework knowledge — injected into all ChatGPT prompts so it uses OUR data
+    DRIVER_KNOWLEDGE = """
+=== DRIVER FRAMEWORK KNOWLEDGE BASE ===
+You are part of a Trading Strategy Dashboard built with the DRIVER methodology.
+ALWAYS use the data below when answering questions. DO NOT use your own general knowledge
+about stocks, ETFs, or treasury yields — use ONLY what is documented here.
+
+ASSET UNIVERSE (these are the ONLY ETFs we use):
+Equities:
+- SPY: S&P 500 ETF, ~10% expected return, ~16% risk, beta ~1.0
+- QQQ: Nasdaq 100, ~12% return, ~20% risk, beta ~1.2 (tech-heavy)
+- VTI: Total Stock Market, ~10% return, ~16% risk
+- VXUS: International Stocks, ~7% return, ~18% risk
+- VGT: Tech Sector ETF, ~14% return, ~22% risk, beta ~1.2
+- IWM: Small Cap, ~11% return, ~22% risk, beta ~1.2
+- VIG: Dividend Appreciation, ~9% return, ~14% risk
+- SCHD: Dividend Growth, ~9% return, ~14% risk, 3.5% yield
+
+Treasury ETFs (government bonds, no credit risk):
+- TLT: 20+ Year Treasury, ~4% return, duration 17.5 yrs — very rate-sensitive
+- IEF: 7-10 Year Treasury, ~3.5% return, duration 7.5 yrs
+- SHY: 1-3 Year Treasury, ~3% return, duration 1.9 yrs — very stable
+- TIP: TIPS (inflation-protected), ~3.5% return, duration 6.8 yrs
+
+Corporate Bonds:
+- BND: Total Bond Market, ~4% return, duration 6.5 yrs
+- LQD: Investment Grade Corporate, ~5% return, duration 8.5 yrs
+- HYG: High Yield (junk bonds), ~6% return, duration 3.8 yrs — higher risk/reward
+
+Other:
+- GLD: Gold, ~5% return, 15% risk — inflation hedge, no yield
+- VNQ: Real Estate REITs, ~8% return, 4% yield
+
+BETA-RISK SYSTEM (this is how we match risk tolerance to portfolios):
+- Very Conservative: beta 0.05-0.29 (target 0.15). 5-15% equity, 50-75% treasury.
+- Conservative: beta 0.30-0.54 (target 0.42). 25-45% equity, 10-25% treasury.
+- Moderate: beta 0.55-0.84 (target 0.70). 55-75% equity, 5-15% treasury.
+- Aggressive: beta 0.85-1.04 (target 0.95). 75-95% equity, 0-10% treasury.
+- Very Aggressive: beta 1.05-1.50 (target 1.20). 80-100% equity, 0-10% treasury.
+
+KEY METHODOLOGY:
+- Beta measures how much a portfolio moves relative to the market (beta=1 means it moves exactly with S&P 500)
+- Lower beta = less volatile = safer but lower returns
+- Duration measures bond price sensitivity to interest rates (higher duration = more rate risk)
+- We use Shannon entropy to measure market concentration
+- Portfolio risk = weighted average of individual asset risks (simplified)
+
+TREASURY GUIDANCE:
+- When rates are HIGH: short-duration treasuries (SHY) lock in yield with low risk
+- When rates are LOW: long-duration treasuries (TLT) for capital appreciation potential
+- TIPS (TIP) for inflation protection
+- Corporate bonds (LQD, HYG) offer higher yield but add credit risk
+
+STOCK-SPECIFIC GUIDANCE:
+- High-beta stocks (TSLA ~2.0, NVDA ~1.7, AMD ~1.6) are ONLY appropriate for aggressive/very_aggressive
+- For moderate investors who want TSLA: limit to 5-10% of portfolio, balance with bonds
+- For conservative investors: stick to broad market ETFs (VTI, SPY) not individual stocks
+- Dividend stocks (SCHD, VIG) are good for conservative/moderate — provide income + stability
+
+WHEN SOMEONE ASKS ABOUT A SPECIFIC STOCK:
+- Check if it's in our asset universe above — if yes, use our data
+- If it's NOT in our universe (e.g., individual stocks like AAPL, GOOGL), explain that
+  the dashboard can add it but note its beta and how it would affect portfolio risk
+- ALWAYS relate it back to their risk level and beta target
+=== END DRIVER KNOWLEDGE ===
+"""
+
+    # System prompt for ChatGPT PARSER — extracts structured intent from natural language
+    # Key addition: "ready" field controls whether to act or keep talking
+    CHATGPT_PARSER_PROMPT = DRIVER_KNOWLEDGE + """
+You are a financial advisor AI inside a trading dashboard.
+Your job: read the user's message (and conversation history) and decide whether you have
+enough information to build a portfolio, or whether you need to keep talking first.
+
+YOU ARE HAVING A REAL CONVERSATION. Act human. Be warm. Ask follow-up questions when
+the user is unsure. Don't rush to create a portfolio — make sure you understand them first.
+
+WHEN TO SET ready=true (GO ahead and create portfolio):
+- You know their risk tolerance (explicitly stated OR you can confidently infer it)
+- They've given enough context about their goals and comfort level
+- They have a budget (stated or implied)
+- Example: "I have $1000, want TSLA, but don't want to lose everything" → ready=true (enough info)
+
+WHEN TO SET ready=false (KEEP TALKING — ask follow-up questions):
+- They're unsure about their risk level and asking for your opinion
+- They haven't mentioned budget or goals yet
+- Their message is vague or contradictory
+- They're asking questions about investing concepts
+- They want to discuss before committing
+- Example: "Im a risk taker but not sure if I'm risky or very risky" → ready=false (need to ask more)
+
+RISK LEVEL INFERENCE RULES (only assign when confident):
+- "don't want to lose money", "safe", "scared", "preserve capital" → conservative or very_conservative
+- "balanced", "some growth but safe", "new to investing" → moderate
+- Wants volatile stocks BUT expresses caution → moderate
+- "growth", "willing to take risk", "aggressive" → aggressive
+- "YOLO", "maximum returns", "all in" → very_aggressive
+- When unsure → set risk_level to null and ready to false, ask follow-ups
+
+RESPOND WITH ONLY VALID JSON (no markdown, no explanation):
+{
+  "intent": "create_portfolio" | "add_stock" | "check_portfolio" | "market_info" | "rebalance" | "conversation",
+  "ready": true | false,
+  "risk_level": "very_conservative" | "conservative" | "moderate" | "aggressive" | "very_aggressive" | null,
+  "budget": <number or null>,
+  "tickers": ["TSLA", "AAPL"] or [],
+  "treasury_pct": <0.0-1.0 or null>,
+  "return_target": <0.0-1.0 or null>,
+  "reasoning": "<one sentence explaining your decision>",
+  "response": "<your conversational reply to the user — only used when ready=false or intent is conversation/market_info. Be warm, human, ask good follow-up questions. Use markdown.>"
+}
+
+EXAMPLES:
+
+User: "I have $1000 and people said use TSLA but I don't want to lose everything"
+→ {"intent":"create_portfolio","ready":true,"risk_level":"moderate","budget":1000,"tickers":["TSLA"],"treasury_pct":null,"return_target":null,"reasoning":"Wants TSLA but fears losses — moderate balances both","response":""}
+
+User: "Im a risk taker, I want to make money but not sure if I'm risky or very risky, what do you think?"
+→ {"intent":"conversation","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"reasoning":"User is unsure between aggressive and very aggressive — need more info","response":"Great question! Let me help you figure that out. A few things to consider:\\n\\n- **Aggressive** means you're comfortable with market swings — maybe 15-20% drops — but you still want some diversification. Think growth stocks + some bonds as a safety net.\\n- **Very Aggressive** means you're okay with BIG swings (30%+ drops possible) for maximum upside — heavy tech, high-beta stocks, minimal bonds.\\n\\nHere's what would help me decide: **How would you feel if your portfolio dropped 25% in a month?** Would you hold steady or panic sell? Also, **what's your investment timeline** — are we talking 2 years or 20 years?"}
+
+User: "What's happening in the market?"
+→ {"intent":"market_info","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"reasoning":"General market question","response":"Let me give you a quick market snapshot..."}
+
+User: "I'd hold steady on a 25% drop, and I'm thinking 10+ years. I have about $50k"
+→ {"intent":"create_portfolio","ready":true,"risk_level":"aggressive","budget":50000,"tickers":[],"treasury_pct":null,"return_target":null,"reasoning":"Can handle 25% drops + long horizon + wants growth = aggressive","response":""}
+
+CRITICAL RULES:
+- When ready=false, the "response" field IS your reply to the user. Make it conversational, helpful, human.
+- When ready=true, the "response" field can be empty — the system will generate the portfolio.
+- ALWAYS look at conversation history to build context across multiple messages.
+- If the user answers your follow-up questions, use ALL prior context to make your decision.
+- Don't ask more than 2-3 questions before making a recommendation. Don't over-interrogate."""
+
+    # System prompt for ChatGPT RESPONDER — writes friendly response after portfolio creation
+    CHATGPT_RESPONDER_PROMPT = DRIVER_KNOWLEDGE + """
+You are a friendly AI financial advisor in a trading dashboard.
+The system just created a portfolio for the user. Write a short, warm intro to go above the portfolio table.
+
+RULES:
+- Be warm, approachable, and educational — many users are beginners
+- Explain WHY you chose their risk level in simple terms, referencing what they told you
+- Reference the conversation you've had — make it feel like a real advisor relationship
+- Mention the beta-risk system briefly: Very Conservative (beta <0.30), Conservative (0.30-0.54), Moderate (0.55-0.84), Aggressive (0.85-1.04), Very Aggressive (1.05+)
+- Keep it 2-4 sentences. Use markdown.
+- If they mentioned specific stocks, explain how those fit into the overall allocation
+- NEVER recommend anything outside their risk level's beta range"""
+
+    @classmethod
+    def chatgpt_parse_message(cls, user_message: str, chat_history: list) -> dict:
+        """Use ChatGPT to understand the user and decide whether to act or keep talking."""
+        if not OPENAI_AVAILABLE or openai_client is None:
+            return None
+
+        try:
+            messages = [{"role": "system", "content": cls.CHATGPT_PARSER_PROMPT}]
+
+            # Include conversation history so ChatGPT can build on prior exchanges
+            for msg in chat_history[-12:]:
+                role = msg.get("role", "user")
+                if role in ("user", "assistant"):
+                    messages.append({"role": role, "content": msg["content"][:500]})
+
+            messages.append({"role": "user", "content": user_message})
+
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+            raw = response.choices[0].message.content.strip()
+            # Strip markdown code fences if present
+            if raw.startswith("```"):
+                raw = raw.split("\n", 1)[-1].rsplit("```", 1)[0]
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    @classmethod
+    def chatgpt_friendly_response(cls, user_message: str, action_result: str,
+                                   parsed: dict, chat_history: list) -> str:
+        """Use ChatGPT to write a friendly wrapper around the portfolio result."""
+        if not OPENAI_AVAILABLE or openai_client is None:
+            return action_result
+
+        try:
+            portfolio_context = ""
+            if st.session_state.portfolio:
+                holdings = [f"{p['ticker']} ({p.get('quantity', 0)} shares)" for p in st.session_state.portfolio[:10]]
+                portfolio_context = f"Current portfolio: {', '.join(holdings)}. "
+
+            risk_level = st.session_state.user_profile.get("risk_level", "moderate")
+            reasoning = parsed.get("reasoning", "")
+
+            # Build conversation context so the responder knows what was discussed
+            recent_convo = ""
+            for msg in chat_history[-6:]:
+                role = "User" if msg.get("role") == "user" else "Advisor"
+                recent_convo += f"{role}: {msg['content'][:200]}\n"
+
+            messages = [
+                {"role": "system", "content": cls.CHATGPT_RESPONDER_PROMPT},
+                {"role": "user", "content": (
+                    f"Conversation so far:\n{recent_convo}\n"
+                    f"Latest user message: \"{user_message}\"\n"
+                    f"System detected: risk_level={parsed.get('risk_level')}, "
+                    f"budget={parsed.get('budget')}, tickers={parsed.get('tickers')}\n"
+                    f"Reasoning: {reasoning}\n"
+                    f"{portfolio_context}"
+                    f"Current risk profile: {risk_level}\n"
+                    f"The system has created a portfolio table that will appear below your message. "
+                    f"Write a short friendly intro. Reference the conversation you've had."
+                )},
+            ]
+
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.6,
+                max_tokens=300,
+            )
+
+            return response.choices[0].message.content.strip()
+        except Exception:
+            return None
+
+    @classmethod
+    def chatgpt_conversational(cls, user_message: str, chat_history: list) -> str:
+        """Use ChatGPT for general conversation (market questions, explanations, etc.)."""
+        if not OPENAI_AVAILABLE or openai_client is None:
+            return None
+
+        try:
+            portfolio_context = ""
+            if st.session_state.portfolio:
+                holdings = [f"{p['ticker']} ({p.get('quantity', 0)} shares)" for p in st.session_state.portfolio[:10]]
+                portfolio_context = f"\n[Current portfolio: {', '.join(holdings)}]"
+            risk_level = st.session_state.user_profile.get("risk_level", "moderate")
+            portfolio_context += f"\n[User risk profile: {risk_level}]"
+
+            messages = [{"role": "system", "content": (
+                cls.CHATGPT_RESPONDER_PROMPT + portfolio_context
+            )}]
+
+            for msg in chat_history[-10:]:
+                role = msg.get("role", "user")
+                if role in ("user", "assistant"):
+                    messages.append({"role": role, "content": msg["content"][:500]})
+
+            messages.append({"role": "user", "content": user_message})
+
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=messages,
+                temperature=0.5,
+                max_tokens=600,
+            )
+
+            return response.choices[0].message.content
+        except Exception:
+            return None
+
     @classmethod
     def execute_action(cls, intent: str, parsed: dict) -> str:
         """Execute the detected action and return response."""
@@ -2724,22 +3006,23 @@ What would you like to do?"""
 
     @classmethod
     def chat(cls, user_message: str, chat_history: list) -> str:
-        """Main chat function - uses Ollama if available, otherwise smart rules."""
+        """Main chat function — ChatGPT understands intent, existing engine executes."""
 
-        # Parse the message
-        parsed = cls.parse_message_smart(user_message)
+        # Step 0: Handle pending portfolio — confirmation or follow-up questions
+        if st.session_state.get("pending_portfolio"):
+            is_confirmation = any(word in user_message.lower() for word in [
+                "yes", "confirm", "do it", "proceed", "add it", "looks good",
+                "go ahead", "approve", "accept", "let's do it", "sounds good",
+            ])
 
-        # Check for confirmation of pending portfolio
-        # Note: Sidebar usually handles this first, but keeping for consistency
-        if any(word in user_message.lower() for word in ["yes", "confirm", "do it", "proceed", "add it", "looks good"]):
-            if st.session_state.get("pending_portfolio"):
+            if is_confirmation:
+                # User confirmed — add positions to portfolio
                 portfolio = st.session_state.pending_portfolio
                 added_count = 0
                 for pos in portfolio["positions"]:
                     ticker = pos["ticker"]
                     dollar_amount = pos.get("dollar_amount", 0)
 
-                    # Get current price
                     current_price = pos.get("current_price", 100)
                     if current_price <= 0:
                         stock_data = get_stock_data(ticker, period="5d")
@@ -2750,7 +3033,6 @@ What would you like to do?"""
 
                     quantity = int(dollar_amount / current_price) if current_price > 0 else 0
                     if quantity > 0:
-                        # Determine display type
                         pos_type = pos.get("type", "equity").lower()
                         if pos_type in ["stock"]:
                             display_type = "Stock"
@@ -2777,15 +3059,124 @@ What would you like to do?"""
                 st.session_state.pending_portfolio = None
                 return f"✅ **Done!** Added {added_count} positions to your portfolio. Check the **Portfolio** tab to see them."
 
-        # Try to execute the detected intent
-        intent = parsed.get("intent", "unknown")
-        result = cls.execute_action(intent, parsed)
+            else:
+                # User said something OTHER than "yes" while a portfolio is pending
+                # → Route to ChatGPT to answer their follow-up question about the portfolio
+                is_rejection = any(word in user_message.lower() for word in [
+                    "no", "cancel", "nevermind", "never mind", "scrap", "start over", "redo",
+                ])
+
+                if is_rejection:
+                    st.session_state.pending_portfolio = None
+                    return "No problem — I've cleared that portfolio. Want to start fresh? Just tell me about your goals and I'll put something together."
+
+                # Follow-up question about the pending portfolio — let ChatGPT handle it
+                if OPENAI_AVAILABLE:
+                    pending = st.session_state.pending_portfolio
+                    # Build context about what was proposed
+                    positions_summary = ", ".join(
+                        f"{p['ticker']} ({p['allocation']*100:.0f}%, ${p['dollar_amount']:,.0f})"
+                        for p in pending.get("positions", [])
+                    )
+                    risk_level = st.session_state.user_profile.get("risk_level", "moderate")
+                    target_beta = st.session_state.user_profile.get("target_beta", "N/A")
+
+                    portfolio_context = (
+                        f"A portfolio has been proposed but NOT yet confirmed. The user is asking a follow-up question.\n"
+                        f"Proposed portfolio: {positions_summary}\n"
+                        f"Risk level: {risk_level}, Target beta: {target_beta}\n"
+                        f"Expected return: {pending.get('expected_return', 0)*100:.1f}%, "
+                        f"Volatility: {pending.get('portfolio_risk', 0)*100:.1f}%\n"
+                        f"Equity: {pending.get('summary', {}).get('equity', 0)*100:.0f}%, "
+                        f"Treasury: {pending.get('summary', {}).get('treasury', 0)*100:.0f}%, "
+                        f"Bonds: {pending.get('summary', {}).get('bonds', 0)*100:.0f}%\n\n"
+                        f"Answer their question about this portfolio. Be specific — reference the actual "
+                        f"positions and numbers. If they want changes, explain what would change and why. "
+                        f"Remind them they can say 'yes' to confirm or 'no' to start over."
+                    )
+
+                    try:
+                        messages = [
+                            {"role": "system", "content": cls.CHATGPT_RESPONDER_PROMPT + "\n\n" + portfolio_context},
+                        ]
+                        for msg in chat_history[-8:]:
+                            role = msg.get("role", "user")
+                            if role in ("user", "assistant"):
+                                messages.append({"role": role, "content": msg["content"][:500]})
+                        messages.append({"role": "user", "content": user_message})
+
+                        response = openai_client.chat.completions.create(
+                            model="gpt-4o-mini",
+                            messages=messages,
+                            temperature=0.5,
+                            max_tokens=400,
+                        )
+                        return response.choices[0].message.content
+                    except Exception:
+                        pass
+
+                # Fallback if ChatGPT unavailable
+                return ("I have a portfolio ready for you! If you have questions about it, feel free to ask. "
+                        "Say **'yes'** to add it to your portfolio, or **'no'** to start over.")
+
+        # Step 1: Rule-based parsing (fast, free — catches explicit keywords)
+        parsed = cls.parse_message_smart(user_message)
+        rule_intent = parsed.get("intent", "unknown")
+
+        # Step 2: ChatGPT understanding layer (if available)
+        # ChatGPT decides: do I have enough info to act, or should I keep talking?
+        chatgpt_parsed = None
+        if OPENAI_AVAILABLE:
+            chatgpt_parsed = cls.chatgpt_parse_message(user_message, chat_history)
+
+        if chatgpt_parsed:
+            gpt_intent = chatgpt_parsed.get("intent", "unknown")
+            gpt_ready = chatgpt_parsed.get("ready", False)
+            gpt_response = chatgpt_parsed.get("response", "")
+
+            # NOT READY — ChatGPT wants to keep talking (ask follow-ups, explain, etc.)
+            if not gpt_ready and gpt_response:
+                return gpt_response
+
+            # READY — ChatGPT has enough info, merge into parsed and execute
+            if gpt_ready and gpt_intent in ("create_portfolio", "add_stock", "rebalance", "check_portfolio"):
+                if chatgpt_parsed.get("risk_level"):
+                    parsed["risk_level"] = chatgpt_parsed["risk_level"]
+                if chatgpt_parsed.get("budget"):
+                    parsed["budget"] = chatgpt_parsed["budget"]
+                if chatgpt_parsed.get("tickers"):
+                    existing = set(parsed.get("tickers", []))
+                    for t in chatgpt_parsed["tickers"]:
+                        existing.add(t)
+                    parsed["tickers"] = list(existing)
+                if chatgpt_parsed.get("treasury_pct") is not None:
+                    parsed["treasury_pct"] = chatgpt_parsed["treasury_pct"]
+                if chatgpt_parsed.get("return_target") is not None:
+                    parsed["return_target"] = chatgpt_parsed["return_target"]
+
+                parsed["intent"] = gpt_intent
+                rule_intent = gpt_intent
+
+        # Step 3: Execute through existing pipeline (beta limiters intact)
+        result = cls.execute_action(rule_intent, parsed)
 
         if result:
+            # Add ChatGPT's friendly intro above the portfolio table
+            if OPENAI_AVAILABLE and chatgpt_parsed and rule_intent == "create_portfolio":
+                friendly = cls.chatgpt_friendly_response(
+                    user_message, result, chatgpt_parsed, chat_history
+                )
+                if friendly:
+                    return friendly + "\n\n---\n\n" + result
             return result
 
-        # If we have Ollama, use it for better understanding
-        if OLLAMA_AVAILABLE and intent == "unknown":
+        # Step 4: Fallback — conversational via ChatGPT, Ollama, or rules
+        if OPENAI_AVAILABLE:
+            response = cls.chatgpt_conversational(user_message, chat_history)
+            if response:
+                return response
+
+        if OLLAMA_AVAILABLE:
             ollama_prompt = f"""You are a helpful financial advisor assistant. The user said: "{user_message}"
 
 Based on this, determine what they want and respond helpfully. Keep your response concise and actionable.
@@ -2802,7 +3193,6 @@ Respond naturally and helpfully:"""
             if ollama_response:
                 return ollama_response
 
-        # Fallback to smart response based on what we parsed
         return cls.generate_smart_response(parsed, user_message)
 
 
@@ -2837,6 +3227,8 @@ with st.sidebar:
 
     # Show AI status
     ai_status = []
+    if OPENAI_AVAILABLE:
+        ai_status.append("ChatGPT")
     if SPACY_AVAILABLE:
         ai_status.append("spaCy NLP")
     if OLLAMA_AVAILABLE:
@@ -2844,7 +3236,7 @@ with st.sidebar:
     if not ai_status:
         ai_status.append("Smart Rules")
 
-    st.caption(f"🧠 AI: {' + '.join(ai_status)} | 100% FREE")
+    st.caption(f"🧠 AI: {' + '.join(ai_status)}")
     st.markdown("---")
 
     # Chat interface

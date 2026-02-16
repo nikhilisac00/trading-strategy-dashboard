@@ -17,7 +17,8 @@ This script fetches REAL data and PROVES each claim.
 import numpy as np
 import pandas as pd
 from datetime import datetime, timedelta
-from typing import Dict, List, Tuple
+from typing import Dict, List, Tuple, Optional
+from scipy import stats
 
 # ============================================================
 # CONFIGURATION
@@ -156,8 +157,8 @@ def validate_divergence(stock_data: Dict[str, pd.DataFrame]) -> Dict:
 # VALIDATION CLAIM 2: Concentration Increased
 # ============================================================
 
-# S&P 500 sector weights (approximate, from public sources)
-WEIGHTS_NOV_2022 = {
+# S&P 500 sector weights fallbacks (approximate, from public sources)
+WEIGHTS_NOV_2022_FALLBACK = {
     "Technology": 0.20,  # Before AI boom
     "Healthcare": 0.15,
     "Financials": 0.12,
@@ -172,7 +173,7 @@ WEIGHTS_NOV_2022 = {
     "Other": 0.06,
 }
 
-WEIGHTS_NOV_2024 = {
+WEIGHTS_NOV_2024_FALLBACK = {
     "Technology": 0.32,  # After AI boom (Mag 7 dominance)
     "Healthcare": 0.12,
     "Financials": 0.10,
@@ -187,12 +188,70 @@ WEIGHTS_NOV_2024 = {
     "Other": 0.06,
 }
 
-# Mag 7 as percentage of S&P 500
+# Sector ETFs for market cap weighting
+SECTOR_ETFS = {
+    "XLK": "Technology",
+    "XLV": "Healthcare",
+    "XLF": "Financials",
+    "XLY": "Consumer Discretionary",
+    "XLC": "Communication Services",
+    "XLI": "Industrials",
+    "XLP": "Consumer Staples",
+    "XLE": "Energy",
+    "XLU": "Utilities",
+    "XLB": "Materials",
+    "XLRE": "Real Estate",
+}
+
+# Mag 7 as percentage of S&P 500 (fallback)
 MAG7_WEIGHT_NOV_2022 = 0.20  # ~20% before
 MAG7_WEIGHT_NOV_2024 = 0.32  # ~32% after
 
 
-def validate_concentration() -> Dict:
+def fetch_sector_weights_by_marketcap(
+    fallback: Optional[Dict[str, float]] = None,
+) -> Dict[str, float]:
+    """
+    Fetch real sector weights using market cap data from sector ETFs.
+
+    Uses yfinance to get marketCap from each sector ETF's .info,
+    then computes weights as etf_market_cap / total_market_cap.
+    Falls back to hardcoded weights if API fails.
+
+    Returns:
+        Dictionary mapping sector names to weights (summing to ~1.0).
+    """
+    if fallback is None:
+        fallback = WEIGHTS_NOV_2024_FALLBACK
+
+    try:
+        import yfinance as yf
+    except ImportError:
+        print("  yfinance not available, using fallback weights")
+        return fallback
+
+    market_caps = {}
+    for etf_ticker, sector_name in SECTOR_ETFS.items():
+        try:
+            info = yf.Ticker(etf_ticker).info
+            mc = info.get("totalAssets") or info.get("marketCap") or 0
+            if mc > 0:
+                market_caps[sector_name] = mc
+        except Exception:
+            continue
+
+    if len(market_caps) < 5:
+        print("  Insufficient ETF data, using fallback weights")
+        return fallback
+
+    total = sum(market_caps.values())
+    weights = {sector: mc / total for sector, mc in market_caps.items()}
+
+    print(f"  Fetched live market cap weights for {len(weights)} sectors")
+    return weights
+
+
+def validate_concentration(use_live_data: bool = True) -> Dict:
     """
     CLAIM 2: Market concentration increased after ChatGPT.
 
@@ -200,9 +259,21 @@ def validate_concentration() -> Dict:
     - Sector entropy decreased (more concentrated)
     - Mag 7 weight increased significantly
     - HHI increased
+
+    If use_live_data is True, fetches current sector weights via yfinance
+    market cap data and compares against the Nov 2022 fallback baseline.
     """
-    weights_before = list(WEIGHTS_NOV_2022.values())
-    weights_after = list(WEIGHTS_NOV_2024.values())
+    weights_before_dict = WEIGHTS_NOV_2022_FALLBACK
+
+    if use_live_data:
+        weights_after_dict = fetch_sector_weights_by_marketcap(
+            fallback=WEIGHTS_NOV_2024_FALLBACK
+        )
+    else:
+        weights_after_dict = WEIGHTS_NOV_2024_FALLBACK
+
+    weights_before = list(weights_before_dict.values())
+    weights_after = list(weights_after_dict.values())
 
     entropy_before = sector_entropy(weights_before)
     entropy_after = sector_entropy(weights_after)
@@ -352,6 +423,182 @@ def validate_creative_destruction(stock_data: Dict[str, pd.DataFrame]) -> Dict:
 
 
 # ============================================================
+# STRUCTURAL BREAK DETECTION: Page's CUSUM
+# ============================================================
+
+def pages_cusum(
+    returns: pd.Series,
+    break_date: str = CHATGPT_LAUNCH,
+    k_factor: float = 0.5,
+    h_factor: float = 4.0,
+) -> Dict:
+    """
+    Page's CUSUM test for structural break detection.
+
+    Uses the pre-break period to establish reference mean (mu_0) and sigma,
+    then runs cumulative sum statistics to detect a shift.
+
+    S_upper(t) = max(0, S_upper(t-1) + (x_t - mu_0) - k)
+    S_lower(t) = min(0, S_lower(t-1) + (x_t - mu_0) + k)
+    Signal when |S| > h
+
+    Args:
+        returns: Series of daily returns (e.g. from pct_change()).
+        break_date: Known or hypothesized break date.
+        k_factor: Slack parameter as multiple of sigma (typically 0.5).
+        h_factor: Decision threshold as multiple of sigma (typically 4-5).
+
+    Returns:
+        Dictionary with CUSUM series, signal points, and detection result.
+    """
+    returns = returns.dropna()
+    break_dt = pd.to_datetime(break_date)
+
+    pre_break = returns[returns.index < break_dt]
+    post_break = returns[returns.index >= break_dt]
+
+    if len(pre_break) < 20 or len(post_break) < 5:
+        return {
+            "detected": False,
+            "error": "Insufficient data for CUSUM (need >=20 pre-break obs)",
+        }
+
+    mu_0 = pre_break.mean()
+    sigma = pre_break.std()
+
+    k = k_factor * sigma  # allowance / slack
+    h = h_factor * sigma  # decision threshold
+
+    # Run CUSUM on the full series
+    s_upper = np.zeros(len(returns))
+    s_lower = np.zeros(len(returns))
+    signals = []
+
+    for i in range(1, len(returns)):
+        x_t = returns.iloc[i]
+        s_upper[i] = max(0.0, s_upper[i - 1] + (x_t - mu_0) - k)
+        s_lower[i] = min(0.0, s_lower[i - 1] + (x_t - mu_0) + k)
+
+        if s_upper[i] > h or abs(s_lower[i]) > h:
+            signals.append(returns.index[i])
+
+    cusum_series = pd.DataFrame(
+        {"S_upper": s_upper, "S_lower": s_lower},
+        index=returns.index,
+    )
+
+    # Check if any signal falls near the hypothesized break date
+    post_signals = [s for s in signals if s >= break_dt]
+    detected = len(post_signals) > 0
+
+    first_signal = post_signals[0] if post_signals else None
+
+    return {
+        "detected": detected,
+        "first_signal_date": first_signal,
+        "n_signals": len(signals),
+        "n_post_break_signals": len(post_signals),
+        "cusum_series": cusum_series,
+        "threshold_h": h,
+        "reference_mean": mu_0,
+        "reference_sigma": sigma,
+        "k": k,
+        "interpretation": (
+            f"CUSUM {'detected' if detected else 'did not detect'} a structural break. "
+            f"Reference mean={mu_0:.6f}, sigma={sigma:.4f}, "
+            f"threshold h={h:.4f}. "
+            + (f"First signal: {first_signal}" if first_signal else "No post-break signals.")
+        ),
+    }
+
+
+# ============================================================
+# STRUCTURAL BREAK DETECTION: Chow Test
+# ============================================================
+
+def chow_test(
+    returns: pd.Series,
+    break_date: str = CHATGPT_LAUNCH,
+) -> Dict:
+    """
+    Chow test for structural break at a known break point.
+
+    Splits data at break_date, runs OLS on each sub-period
+    (returns regressed on a time trend), and computes the F-statistic.
+
+    F = ((RSS_pooled - RSS_1 - RSS_2) / k) / ((RSS_1 + RSS_2) / (n - 2k))
+
+    Args:
+        returns: Series of daily returns.
+        break_date: Known break point date.
+
+    Returns:
+        Dictionary with F-statistic, p-value, and interpretation.
+    """
+    returns = returns.dropna()
+    break_dt = pd.to_datetime(break_date)
+
+    pre = returns[returns.index < break_dt].values
+    post = returns[returns.index >= break_dt].values
+
+    if len(pre) < 10 or len(post) < 10:
+        return {
+            "f_statistic": np.nan,
+            "p_value": np.nan,
+            "significant": False,
+            "error": "Insufficient data for Chow test",
+        }
+
+    def ols_rss(y: np.ndarray) -> float:
+        """Residual sum of squares from OLS with intercept + trend."""
+        n = len(y)
+        X = np.column_stack([np.ones(n), np.arange(n)])
+        beta = np.linalg.lstsq(X, y, rcond=None)[0]
+        residuals = y - X @ beta
+        return float(np.sum(residuals ** 2))
+
+    pooled = np.concatenate([pre, post])
+    rss_pooled = ols_rss(pooled)
+    rss_1 = ols_rss(pre)
+    rss_2 = ols_rss(post)
+
+    k = 2  # number of parameters (intercept + trend)
+    n = len(pooled)
+
+    numerator = (rss_pooled - rss_1 - rss_2) / k
+    denominator = (rss_1 + rss_2) / (n - 2 * k)
+
+    if denominator == 0:
+        return {
+            "f_statistic": np.nan,
+            "p_value": np.nan,
+            "significant": False,
+            "error": "Degenerate regression (zero denominator)",
+        }
+
+    f_stat = numerator / denominator
+    p_value = 1.0 - stats.f.cdf(f_stat, k, n - 2 * k)
+
+    significant = p_value < 0.05
+
+    return {
+        "f_statistic": float(f_stat),
+        "p_value": float(p_value),
+        "significant": significant,
+        "n_pre": len(pre),
+        "n_post": len(post),
+        "rss_pooled": rss_pooled,
+        "rss_pre": rss_1,
+        "rss_post": rss_2,
+        "interpretation": (
+            f"Chow test F={f_stat:.4f}, p={p_value:.6f}. "
+            f"{'Significant' if significant else 'Not significant'} at 5% level. "
+            f"{'Structural break confirmed.' if significant else 'No evidence of structural break.'}"
+        ),
+    }
+
+
+# ============================================================
 # THE SAMPLE SPACE PARADOX
 # ============================================================
 
@@ -486,6 +733,37 @@ def run_full_validation():
     print(f"\n{destruction_results['interpretation']}")
     print(f"\n→ CLAIM 4 SUPPORTED: {'YES ✓' if destruction_results['claim_supported'] else 'NO ✗'}")
 
+    # Structural Break Detection
+    print("\n" + "=" * 70)
+    print("STRUCTURAL BREAK DETECTION (CUSUM & Chow Test)")
+    print("=" * 70)
+
+    cusum_results = {}
+    chow_results = {}
+
+    # Use SPY returns for structural break tests
+    spy_data = stock_data.get("SPY")
+    if spy_data is not None and len(spy_data) > 30:
+        # Need pre-break data too — fetch from earlier
+        try:
+            pre_launch_start = "2021-01-01"
+            spy_full = fetch_stock_data("SPY", pre_launch_start, ANALYSIS_END)
+            spy_returns = spy_full["Close"].pct_change().dropna()
+
+            print("\n[CUSUM — Page's Cumulative Sum Test]")
+            cusum_results = pages_cusum(spy_returns, break_date=CHATGPT_LAUNCH)
+            print(f"  {cusum_results.get('interpretation', 'N/A')}")
+            if cusum_results.get("detected"):
+                print(f"  Post-break signals: {cusum_results['n_post_break_signals']}")
+
+            print("\n[Chow Test — Structural Break F-Test]")
+            chow_results = chow_test(spy_returns, break_date=CHATGPT_LAUNCH)
+            print(f"  {chow_results.get('interpretation', 'N/A')}")
+        except Exception as e:
+            print(f"  Structural break tests skipped: {e}")
+    else:
+        print("\n  SPY data unavailable — skipping structural break tests.")
+
     # The Paradox
     print("\n" + "=" * 70)
     print("THE PARADOX EXPLAINED")
@@ -535,6 +813,8 @@ This is fundamentally different from Week 1 (Tariff Shock):
         "concentration": concentration_results,
         "expansion": expansion_results,
         "destruction": destruction_results,
+        "cusum": cusum_results,
+        "chow_test": chow_results,
         "thesis_supported": all_supported,
     }
 

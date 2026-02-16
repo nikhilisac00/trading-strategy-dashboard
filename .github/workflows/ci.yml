@@ -1,0 +1,66 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Syntax check all Python files
+        run: python -m py_compile src/dashboard.py src/validate_thesis.py src/starter_template.py
+
+      - name: Import smoke test
+        run: |
+          python -c "
+          import pandas, numpy, plotly, yfinance, scipy
+          print('Core imports OK')
+          "
+
+      - name: Run validate_thesis (offline - no yfinance calls)
+        run: |
+          python -c "
+          from src.validate_thesis import (
+              sector_entropy, normalized_entropy, herfindahl_index,
+              pages_cusum, chow_test,
+              WEIGHTS_NOV_2022_FALLBACK, WEIGHTS_NOV_2024_FALLBACK,
+          )
+          import numpy as np
+          import pandas as pd
+
+          # Entropy smoke test
+          uniform = [0.25, 0.25, 0.25, 0.25]
+          assert abs(sector_entropy(uniform) - 2.0) < 0.01, 'Entropy of uniform should be 2.0'
+
+          # CUSUM smoke test with synthetic data
+          np.random.seed(42)
+          pre = np.random.normal(0.001, 0.01, 200)
+          post = np.random.normal(0.005, 0.015, 200)
+          series = pd.Series(np.concatenate([pre, post]),
+                             index=pd.date_range('2022-01-01', periods=400, freq='B'))
+          result = pages_cusum(series, break_date='2022-10-14')
+          print(f'CUSUM detected: {result[\"detected\"]}')
+
+          # Chow test smoke test
+          chow = chow_test(series, break_date='2022-10-14')
+          print(f'Chow F={chow[\"f_statistic\"]:.4f}, p={chow[\"p_value\"]:.6f}')
+
+          print('All offline tests passed')
+          "
