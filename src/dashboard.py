@@ -1422,29 +1422,129 @@ class FinancialPlannerAI:
 
     @classmethod
     def generate_rebalancing_trades(cls, positions: list, target_allocation: dict, total_value: float) -> list:
-        """Generate specific trades to rebalance portfolio."""
+        """
+        Generate specific trades to rebalance portfolio.
+        PRESERVES user-added positions and adjusts system positions around them.
+        """
+        risk_level = "moderate"
+        if st.session_state.user_profile:
+            risk_level = st.session_state.user_profile.get("risk_level", "moderate")
+        beta_target = cls.BETA_TARGETS.get(risk_level, cls.BETA_TARGETS["moderate"])
+        target_beta = beta_target["target"]
+
         trades = []
 
-        # Calculate target values
-        target_equity = total_value * target_allocation.get("equity", 0.6)
-        target_treasury = total_value * target_allocation.get("treasury", 0.1)
-        target_bond = total_value * target_allocation.get("bond", 0.3)
+        # Separate user-added and system positions
+        user_positions = [p for p in positions if p.get("user_added")]
+        system_positions = [p for p in positions if not p.get("user_added")]
 
-        # Simplified: suggest adding to underweight, trimming overweight
-        analysis = cls.analyze_portfolio_for_rebalancing(positions)
-        current = analysis.get("current_allocation", {})
+        # Calculate user-added contribution
+        user_value = 0
+        user_weighted_beta = 0
+        for pos in user_positions:
+            val = pos.get("quantity", 0) * pos.get("entry_price", 0)
+            beta = cls.get_stock_beta(pos.get("ticker", ""))
+            user_value += val
+            user_weighted_beta += val * beta
 
-        if current.get("equity", 0) > target_allocation.get("equity", 0.6) + 0.05:
-            excess = (current["equity"] - target_allocation["equity"]) * total_value
-            trades.append({"action": "SELL", "amount": excess, "category": "equity", "suggestion": f"Trim equities by ${excess:,.0f}"})
+        remaining_value = total_value - user_value
+        if remaining_value <= 0:
+            remaining_value = 0
 
-        if current.get("treasury", 0) < target_allocation.get("treasury", 0.1) - 0.02:
-            needed = (target_allocation["treasury"] - current.get("treasury", 0)) * total_value
-            trades.append({"action": "BUY", "ticker": "IEF", "amount": needed, "suggestion": f"Buy ${needed:,.0f} of IEF (Treasury)"})
+        # Calculate what beta the remaining (system) positions need to achieve
+        if remaining_value > 0 and total_value > 0:
+            user_beta_contribution = user_weighted_beta / total_value
+            needed_beta_from_system = target_beta - user_beta_contribution
+            system_weight = remaining_value / total_value
+            if system_weight > 0:
+                required_system_beta = needed_beta_from_system / system_weight
+            else:
+                required_system_beta = target_beta
+        else:
+            required_system_beta = target_beta
 
-        if current.get("bond", 0) < target_allocation.get("bond", 0.3) - 0.05:
-            needed = (target_allocation["bond"] - current.get("bond", 0)) * total_value
-            trades.append({"action": "BUY", "ticker": "BND", "amount": needed, "suggestion": f"Buy ${needed:,.0f} of BND (Bonds)"})
+        # Check feasibility — can we achieve target beta?
+        feasible = True
+        infeasibility_reason = ""
+
+        if required_system_beta < 0:
+            feasible = False
+            user_beta = user_weighted_beta / user_value if user_value > 0 else 0
+            infeasibility_reason = (
+                f"Your user-added positions (beta ~{user_beta:.2f}) already push the portfolio "
+                f"above the target beta {target_beta:.2f} for your {risk_level.replace('_', ' ')} "
+                f"profile. Even filling the rest with treasury (beta ~0.05) can't bring it down enough."
+            )
+        elif required_system_beta > 2.0:
+            feasible = False
+            user_beta = user_weighted_beta / user_value if user_value > 0 else 0
+            infeasibility_reason = (
+                f"Your user-added positions (beta ~{user_beta:.2f}) are too conservative to "
+                f"reach the target beta {target_beta:.2f} for your {risk_level.replace('_', ' ')} "
+                f"profile. The system positions would need an unrealistic beta of {required_system_beta:.2f}."
+            )
+
+        if not feasible:
+            return [{
+                "action": "INFEASIBLE",
+                "reason": infeasibility_reason,
+                "suggestion": infeasibility_reason,
+            }]
+
+        # Build system trades to achieve required_system_beta
+        # Remove existing system positions (they'll be replaced)
+        for pos in system_positions:
+            val = pos.get("quantity", 0) * pos.get("entry_price", 0)
+            if val > 0:
+                trades.append({
+                    "action": "SELL",
+                    "ticker": pos.get("ticker"),
+                    "amount": val,
+                    "category": "system",
+                    "suggestion": f"Remove {pos.get('ticker')} (${val:,.0f}) — system position, will be replaced",
+                })
+
+        if remaining_value <= 0:
+            return trades
+
+        # Allocate remaining value based on required system beta
+        if required_system_beta <= 0.30:
+            # Need very low beta — heavy treasury
+            alloc = {"SHY": 0.50, "IEF": 0.30, "BND": 0.20}
+        elif required_system_beta <= 0.55:
+            # Low beta — mix of treasury and bonds
+            alloc = {"IEF": 0.30, "BND": 0.25, "SPY": 0.25, "SCHD": 0.20}
+        elif required_system_beta <= 0.85:
+            # Moderate — balanced
+            alloc = {"SPY": 0.40, "BND": 0.20, "IEF": 0.15, "VXUS": 0.15, "SCHD": 0.10}
+        elif required_system_beta <= 1.05:
+            # Aggressive — equity-heavy
+            alloc = {"SPY": 0.40, "QQQ": 0.25, "VGT": 0.15, "VXUS": 0.10, "LQD": 0.10}
+        else:
+            # Very aggressive — high beta
+            alloc = {"QQQ": 0.35, "VGT": 0.25, "IWM": 0.20, "SPY": 0.20}
+
+        # Don't buy something the user already holds
+        user_tickers = {p.get("ticker") for p in user_positions}
+        filtered_alloc = {t: w for t, w in alloc.items() if t not in user_tickers}
+        # Redistribute removed weight
+        if filtered_alloc and len(filtered_alloc) < len(alloc):
+            total_w = sum(filtered_alloc.values())
+            if total_w > 0:
+                filtered_alloc = {t: w / total_w for t, w in filtered_alloc.items()}
+        if filtered_alloc:
+            alloc = filtered_alloc
+
+        for ticker, weight in alloc.items():
+            amount = remaining_value * weight
+            if amount > 50:  # Minimum $50 trade
+                trades.append({
+                    "action": "BUY",
+                    "ticker": ticker,
+                    "amount": amount,
+                    "category": "system",
+                    "suggestion": f"Buy ${amount:,.0f} of {ticker}",
+                })
 
         return trades
 
@@ -1518,7 +1618,8 @@ class FinancialPlannerAI:
                         "expiry": None,
                         "yield_rate": None,
                         "maturity": None,
-                        "id": len(st.session_state.portfolio)
+                        "id": len(st.session_state.portfolio),
+                        "user_added": True,
                     }
                     st.session_state.portfolio.append(position)
                     added_stocks.append({
@@ -1644,13 +1745,57 @@ class FinancialPlannerAI:
             if st.session_state.get("pending_rebalancing"):
                 analysis = st.session_state.pending_rebalancing
 
-                # Generate and execute trades
-                target = {"equity": 0.60, "treasury": 0.10, "bond": 0.30}
+                # Use risk-appropriate target (not hardcoded)
+                risk_level = user_profile.get("risk_level", "moderate")
+                risk_profile = cls.RISK_PROFILES.get(risk_level, cls.RISK_PROFILES["moderate"])
+                target = {
+                    "equity": sum(risk_profile["equity_range"]) / 2,
+                    "treasury": sum(risk_profile["treasury_range"]) / 2,
+                    "bond": sum(risk_profile["bond_range"]) / 2,
+                }
+
                 trades = cls.generate_rebalancing_trades(
                     st.session_state.portfolio,
                     target,
                     analysis["total_value"]
                 )
+
+                # Check for infeasibility
+                infeasible = [t for t in trades if t.get("action") == "INFEASIBLE"]
+                if infeasible:
+                    reason = infeasible[0].get("reason", "Cannot achieve target beta with current user positions.")
+                    st.session_state.pending_rebalancing = None
+
+                    # Let ChatGPT explain if available
+                    if OPENAI_AVAILABLE:
+                        try:
+                            user_positions = [p for p in st.session_state.portfolio if p.get("user_added")]
+                            user_desc = ", ".join(f"{p['ticker']} ({p.get('quantity',0)} shares)" for p in user_positions)
+                            messages = [
+                                {"role": "system", "content": SmartFinancialAgent.CHATGPT_RESPONDER_PROMPT},
+                                {"role": "user", "content": (
+                                    f"The rebalancing engine found that it CANNOT achieve the target beta for "
+                                    f"the user's {risk_level} profile while keeping their user-added positions: {user_desc}.\n"
+                                    f"Reason: {reason}\n\n"
+                                    f"Explain this to the user in simple terms. Suggest what they could do: "
+                                    f"change their risk level, reduce the user-added position size, or accept a "
+                                    f"different beta. Be empathetic and specific with numbers."
+                                )},
+                            ]
+                            response = openai_client.chat.completions.create(
+                                model="gpt-4o-mini", messages=messages, temperature=0.5, max_tokens=400,
+                            )
+                            return response.choices[0].message.content, None, user_profile
+                        except Exception:
+                            pass
+
+                    return f"⚠️ **Rebalancing not possible:** {reason}\n\nYou could adjust your risk level, reduce user-added position sizes, or accept a different beta target.", None, user_profile
+
+                # Remove system positions that are being replaced
+                st.session_state.portfolio = [
+                    p for p in st.session_state.portfolio
+                    if p.get("user_added") or p.get("ticker") not in [t.get("ticker") for t in trades if t["action"] == "SELL"]
+                ]
 
                 # Add new positions for buys
                 for trade in trades:
@@ -1679,7 +1824,10 @@ class FinancialPlannerAI:
                             st.session_state.portfolio.append(position)
 
                 st.session_state.pending_rebalancing = None
-                return "✅ **Rebalancing executed!** I've added the recommended positions. Check the Portfolio tab to see your updated holdings.\n\n*Note: For sells, you'll need to manually adjust quantities in your broker.*", None, user_profile
+
+                user_kept = [p.get("ticker") for p in st.session_state.portfolio if p.get("user_added")]
+                kept_msg = f" Your positions ({', '.join(user_kept)}) were preserved." if user_kept else ""
+                return f"✅ **Rebalancing executed!**{kept_msg} System positions were adjusted to achieve your target beta. Check the Portfolio tab to see your updated holdings.", None, user_profile
             else:
                 return "No pending rebalancing to execute. Say 'rebalance my portfolio' first to get suggestions.", None, user_profile
 
@@ -2867,7 +3015,8 @@ RULES:
                         "entry_price": stock_info["current_price"],
                         "entry_date": datetime.now().strftime("%Y-%m-%d"),
                         "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
-                        "id": len(st.session_state.portfolio)
+                        "id": len(st.session_state.portfolio),
+                        "user_added": True,
                     }
                     st.session_state.portfolio.append(position)
 
@@ -2929,6 +3078,10 @@ RULES:
 
                 analysis = FinancialPlannerAI.analyze_portfolio_for_rebalancing(positions)
 
+                # Show which positions are locked (user-added)
+                user_positions = [p for p in positions if p.get("user_added")]
+                system_positions = [p for p in positions if not p.get("user_added")]
+
                 response = f"""## Portfolio Rebalancing Analysis
 
 **Total Value:** ${analysis['total_value']:,.2f}
@@ -2945,11 +3098,44 @@ RULES:
                 response += f"- **Equity Beta:** {eq_metrics.get('beta', 'N/A')}\n"
                 response += f"- **Bond Duration:** {fi_metrics.get('duration', 0):.1f} years\n"
 
+                if user_positions:
+                    response += "\n### Locked Positions (your picks — preserved during rebalancing)\n"
+                    for p in user_positions:
+                        val = p.get("quantity", 0) * p.get("entry_price", 0)
+                        beta = FinancialPlannerAI.get_stock_beta(p.get("ticker", ""))
+                        response += f"- **{p['ticker']}**: {p.get('quantity', 0)} shares (${val:,.0f}, beta {beta:.2f})\n"
+
+                if system_positions:
+                    response += "\n### Adjustable Positions (system-generated — will be rebalanced)\n"
+                    for p in system_positions:
+                        val = p.get("quantity", 0) * p.get("entry_price", 0)
+                        response += f"- {p['ticker']}: {p.get('quantity', 0)} shares (${val:,.0f})\n"
+
                 if analysis["needs_rebalancing"]:
                     response += "\n### Suggestions\n"
                     for s in analysis["suggestions"]:
                         response += f"- {s}\n"
-                    response += "\n*Say 'execute rebalancing' to implement these changes.*"
+
+                    # Preview feasibility
+                    risk_level = st.session_state.user_profile.get("risk_level", "moderate")
+                    risk_profile = FinancialPlannerAI.RISK_PROFILES.get(risk_level, FinancialPlannerAI.RISK_PROFILES["moderate"])
+                    target = {
+                        "equity": sum(risk_profile["equity_range"]) / 2,
+                        "treasury": sum(risk_profile["treasury_range"]) / 2,
+                        "bond": sum(risk_profile["bond_range"]) / 2,
+                    }
+                    preview_trades = FinancialPlannerAI.generate_rebalancing_trades(
+                        positions, target, analysis["total_value"]
+                    )
+                    infeasible = [t for t in preview_trades if t.get("action") == "INFEASIBLE"]
+
+                    if infeasible:
+                        response += f"\n⚠️ **Warning:** {infeasible[0]['reason']}\n"
+                        response += "\nConsider adjusting your risk level or position sizes."
+                    else:
+                        response += "\n*Say 'execute rebalancing' to implement these changes. Your picks will be kept.*"
+
+                    st.session_state.pending_rebalancing = analysis
                 else:
                     response += "\n**Your portfolio is well-balanced!**"
 
@@ -4110,7 +4296,8 @@ with tab4:
                     "expiry": pos_expiry.strftime("%Y-%m-%d") if pos_expiry else None,
                     "yield_rate": pos_yield,
                     "maturity": pos_maturity.strftime("%Y-%m-%d") if pos_maturity else None,
-                    "id": len(st.session_state.portfolio)
+                    "id": len(st.session_state.portfolio),
+                    "user_added": True,
                 }
                 st.session_state.portfolio.append(position)
                 side_str = "Sold/Shorted" if is_short else "Bought"
