@@ -2806,7 +2806,7 @@ RESPOND WITH ONLY VALID JSON (no markdown, no explanation):
   "intent": "create_portfolio" | "add_stock" | "check_portfolio" | "market_info" | "rebalance" | "conversation",
   "ready": true | false,
   "risk_level": "very_conservative" | "conservative" | "moderate" | "aggressive" | "very_aggressive" | null,
-  "budget": <number or null>,
+  "budget": <number or null — use the EXACT dollar amount the user states. $100 = 100, $5k = 5000, $50k = 50000. NEVER round up or "correct" small amounts. If they say $100, budget is 100, not 100000.>,
   "tickers": ["TSLA", "AAPL"] or [],
   "treasury_pct": <0.0-1.0 or null>,
   "return_target": <0.0-1.0 or null>,
@@ -3006,7 +3006,9 @@ RULES:
         try:
             if intent == "create_portfolio":
                 risk_level = parsed.get("risk_level") or "moderate"
-                budget = parsed.get("budget") or 100000
+                budget = parsed.get("budget")
+                if not budget or budget <= 0:
+                    budget = 10000  # Default only when truly not provided
                 treasury_pct = parsed.get("treasury_pct")
                 tickers = parsed.get("tickers", [])
                 return_target = parsed.get("return_target")
