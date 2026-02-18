@@ -693,6 +693,20 @@ class FinancialPlannerAI:
         },
     }
 
+    HORIZON_PROFILES = {
+        "short": {"label": "Short-term (< 2 years)", "equity_adj": -0.10, "treasury_bias": "SHY"},
+        "medium": {"label": "Medium-term (2-10 years)", "equity_adj": 0.0, "treasury_bias": "IEF"},
+        "long": {"label": "Long-term (10+ years)", "equity_adj": +0.10, "treasury_bias": "TLT"},
+    }
+
+    RETURN_RANGES = {
+        "very_conservative": (0.03, 0.05),
+        "conservative": (0.05, 0.07),
+        "moderate": (0.07, 0.09),
+        "aggressive": (0.09, 0.12),
+        "very_aggressive": (0.12, 0.16),
+    }
+
     # Risk profiles linked to target Beta (calibrated for achievable ETF portfolios)
     # IMPORTANT: No overlap between ranges - clean boundaries
     # Very Conservative: < 0.30
@@ -1053,10 +1067,11 @@ class FinancialPlannerAI:
     @classmethod
     def generate_portfolio(cls, risk_level: str, return_target: float = None,
                           treasury_pct: float = None, budget: float = 100000,
-                          specific_stocks: list = None) -> dict:
+                          specific_stocks: list = None, horizon: str = None) -> dict:
         """Generate a diversified portfolio based on requirements."""
 
         profile = cls.RISK_PROFILES.get(risk_level, cls.RISK_PROFILES["moderate"])
+        horizon_profile = cls.HORIZON_PROFILES.get(horizon) if horizon else None
 
         # Start with base allocation based on risk profile
         allocations = {}
@@ -1100,6 +1115,12 @@ class FinancialPlannerAI:
             bond_alloc = 1.0 - equity_alloc - treasury_alloc - specific_stock_alloc
         else:
             equity_alloc = min(remaining_equity, (equity_min + equity_max) / 2)
+            bond_alloc = 1.0 - equity_alloc - treasury_alloc - specific_stock_alloc
+
+        # Apply horizon adjustment to equity allocation
+        if horizon_profile and risk_level not in ("very_aggressive", "very_conservative"):
+            equity_adj = horizon_profile["equity_adj"]
+            equity_alloc = max(equity_min, min(equity_max, equity_alloc + equity_adj))
             bond_alloc = 1.0 - equity_alloc - treasury_alloc - specific_stock_alloc
 
         # For very_conservative with specific stocks, minimize other equity
@@ -1148,14 +1169,31 @@ class FinancialPlannerAI:
                 allocations["VIG"] = equity_alloc * 0.50   # Dividend growth
 
         if treasury_alloc > 0:
-            # Diversify treasury
-            if treasury_alloc >= 0.15:
-                allocations["TLT"] = treasury_alloc * 0.40
-                allocations["IEF"] = treasury_alloc * 0.40
-                allocations["SHY"] = treasury_alloc * 0.20
+            # Diversify treasury — bias toward horizon-appropriate ETF
+            if horizon_profile:
+                bias_etf = horizon_profile["treasury_bias"]
+                if treasury_alloc >= 0.15:
+                    allocations[bias_etf] = treasury_alloc * 0.60
+                    # Fill remaining with adjacent-duration ETFs
+                    if bias_etf == "SHY":
+                        allocations["IEF"] = treasury_alloc * 0.40
+                    elif bias_etf == "TLT":
+                        allocations["IEF"] = treasury_alloc * 0.40
+                    else:  # IEF
+                        allocations["SHY"] = treasury_alloc * 0.20
+                        allocations["TLT"] = treasury_alloc * 0.20
+                else:
+                    allocations[bias_etf] = treasury_alloc * 0.70
+                    secondary = "IEF" if bias_etf != "IEF" else "SHY"
+                    allocations[secondary] = treasury_alloc * 0.30
             else:
-                allocations["IEF"] = treasury_alloc * 0.60
-                allocations["SHY"] = treasury_alloc * 0.40
+                if treasury_alloc >= 0.15:
+                    allocations["TLT"] = treasury_alloc * 0.40
+                    allocations["IEF"] = treasury_alloc * 0.40
+                    allocations["SHY"] = treasury_alloc * 0.20
+                else:
+                    allocations["IEF"] = treasury_alloc * 0.60
+                    allocations["SHY"] = treasury_alloc * 0.40
 
         if bond_alloc > 0:
             # Diversify bonds
@@ -2661,6 +2699,21 @@ TREASURY GUIDANCE:
 - TIPS (TIP) for inflation protection
 - Corporate bonds (LQD, HYG) offer higher yield but add credit risk
 
+REALISTIC RETURN EXPECTATIONS (use these to validate user targets):
+- Very Conservative: 3-5% expected annual return (mostly bonds/treasury)
+- Conservative: 5-7% expected annual return
+- Moderate: 7-9% expected annual return
+- Aggressive: 9-12% expected annual return
+- Very Aggressive: 12-16% expected annual return (with high volatility)
+- Anything above 16% annually is UNREALISTIC for a diversified portfolio.
+- 30%+ returns require concentrated bets on individual stocks — extremely risky.
+
+INVESTMENT HORIZON GUIDANCE:
+- Short-term (< 2 years): Favor treasury/bonds, minimize equity exposure. Crashes can take 2+ years to recover.
+- Medium-term (2-10 years): Balanced approach. Some equity is fine — time to weather one downturn.
+- Long-term (10+ years): Maximize equity. Historically, stocks always recover over 10+ years.
+- Horizon affects WHICH bonds to use: SHY for short, IEF for medium, TLT for long.
+
 STOCK-SPECIFIC GUIDANCE:
 - High-beta stocks (TSLA ~2.0, NVDA ~1.7, AMD ~1.6) are ONLY appropriate for aggressive/very_aggressive
 - For moderate investors who want TSLA: limit to 5-10% of portfolio, balance with bonds
@@ -2718,6 +2771,27 @@ RISK LEVEL INFERENCE RULES (only assign when confident):
 - "YOLO", "maximum returns", "all in" → very_aggressive
 - When unsure → set risk_level to null and ready to false, ask follow-ups
 
+HORIZON INFERENCE RULES:
+- "retiring soon", "need it next year", "short term", "6 months", "1 year" → "short"
+- "5 years", "medium term", "few years", "3-5 years" → "medium"
+- "long term", "20 years", "retirement in 30 years", "I'm young", "10+ years", "decades" → "long"
+- When unsure → null (ask them)
+
+CONFLICT DETECTION (CRITICAL — check BEFORE setting ready=true):
+- If return_target > realistic max for their risk level → set ready=false
+  and explain why it's unrealistic in the response field, using specific data.
+  Example: "30% returns with conservative risk" → explain that conservative
+  portfolios (beta 0.30-0.54) historically return 5-7% annually. 30% would
+  require concentrated high-beta stocks (TSLA beta ~2.0, NVDA ~1.7) which
+  contradicts conservative risk. Suggest either lowering the target or
+  accepting higher risk.
+- If horizon is "short" but risk_level is "very_aggressive" → warn about
+  drawdown risk: "Very aggressive portfolios can drop 30%+ and take 2-3 years
+  to recover. With a short horizon, you might be forced to sell at a loss."
+- Realistic return caps per risk level:
+  very_conservative: 5%, conservative: 7%, moderate: 9%, aggressive: 12%, very_aggressive: 16%
+  Anything above 16% is unrealistic for diversified portfolios.
+
 RESPOND WITH ONLY VALID JSON (no markdown, no explanation):
 {
   "intent": "create_portfolio" | "add_stock" | "check_portfolio" | "market_info" | "rebalance" | "conversation",
@@ -2727,6 +2801,7 @@ RESPOND WITH ONLY VALID JSON (no markdown, no explanation):
   "tickers": ["TSLA", "AAPL"] or [],
   "treasury_pct": <0.0-1.0 or null>,
   "return_target": <0.0-1.0 or null>,
+  "horizon": "short" | "medium" | "long" | null,
   "reasoning": "<one sentence explaining your decision>",
   "response": "<your conversational reply to the user — only used when ready=false or intent is conversation/market_info. Be warm, human, ask good follow-up questions. Use markdown.>"
 }
@@ -2734,16 +2809,22 @@ RESPOND WITH ONLY VALID JSON (no markdown, no explanation):
 EXAMPLES:
 
 User: "I have $1000 and people said use TSLA but I don't want to lose everything"
-→ {"intent":"create_portfolio","ready":true,"risk_level":"moderate","budget":1000,"tickers":["TSLA"],"treasury_pct":null,"return_target":null,"reasoning":"Wants TSLA but fears losses — moderate balances both","response":""}
+→ {"intent":"create_portfolio","ready":true,"risk_level":"moderate","budget":1000,"tickers":["TSLA"],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"Wants TSLA but fears losses — moderate balances both","response":""}
 
 User: "Im a risk taker, I want to make money but not sure if I'm risky or very risky, what do you think?"
-→ {"intent":"conversation","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"reasoning":"User is unsure between aggressive and very aggressive — need more info","response":"Great question! Let me help you figure that out. A few things to consider:\\n\\n- **Aggressive** means you're comfortable with market swings — maybe 15-20% drops — but you still want some diversification. Think growth stocks + some bonds as a safety net.\\n- **Very Aggressive** means you're okay with BIG swings (30%+ drops possible) for maximum upside — heavy tech, high-beta stocks, minimal bonds.\\n\\nHere's what would help me decide: **How would you feel if your portfolio dropped 25% in a month?** Would you hold steady or panic sell? Also, **what's your investment timeline** — are we talking 2 years or 20 years?"}
+→ {"intent":"conversation","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"User is unsure between aggressive and very aggressive — need more info","response":"Great question! Let me help you figure that out. A few things to consider:\\n\\n- **Aggressive** means you're comfortable with market swings — maybe 15-20% drops — but you still want some diversification. Think growth stocks + some bonds as a safety net.\\n- **Very Aggressive** means you're okay with BIG swings (30%+ drops possible) for maximum upside — heavy tech, high-beta stocks, minimal bonds.\\n\\nHere's what would help me decide: **How would you feel if your portfolio dropped 25% in a month?** Would you hold steady or panic sell? Also, **what's your investment timeline** — are we talking 2 years or 20 years?"}
 
 User: "What's happening in the market?"
-→ {"intent":"market_info","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"reasoning":"General market question","response":"Let me give you a quick market snapshot..."}
+→ {"intent":"market_info","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"General market question","response":"Let me give you a quick market snapshot..."}
 
 User: "I'd hold steady on a 25% drop, and I'm thinking 10+ years. I have about $50k"
-→ {"intent":"create_portfolio","ready":true,"risk_level":"aggressive","budget":50000,"tickers":[],"treasury_pct":null,"return_target":null,"reasoning":"Can handle 25% drops + long horizon + wants growth = aggressive","response":""}
+→ {"intent":"create_portfolio","ready":true,"risk_level":"aggressive","budget":50000,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":"long","reasoning":"Can handle 25% drops + long horizon + wants growth = aggressive","response":""}
+
+User: "I want 30% returns but keep it conservative"
+→ {"intent":"conversation","ready":false,"risk_level":"conservative","budget":null,"tickers":[],"treasury_pct":null,"return_target":0.30,"horizon":null,"reasoning":"CONFLICT: 30% target exceeds conservative max of 7%. Must explain.","response":"I appreciate the ambition, but I need to be honest with you — **30% annual returns with a conservative portfolio isn't realistic.**\\n\\nHere's why: Conservative portfolios target a beta of 0.30-0.54, which historically delivers **5-7% annually**. To hit 30%, you'd need concentrated positions in high-beta stocks like TSLA (beta ~2.0) or NVDA (beta ~1.7) — which is the opposite of conservative.\\n\\nYou have two options:\\n1. **Keep conservative risk** and accept 5-7% returns — safe, steady growth\\n2. **Accept very aggressive risk** (beta 1.05+) for a shot at 12-16% — but with 30%+ drawdown potential\\n\\nEven very aggressive portfolios typically cap around 12-16%. 30% requires individual stock bets. What feels right for you?"}
+
+User: "I need this money in 6 months, go very aggressive"
+→ {"intent":"conversation","ready":false,"risk_level":"very_aggressive","budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":"short","reasoning":"CONFLICT: short horizon + very aggressive risk — drawdown warning needed","response":"I hear you want maximum returns, but I need to flag something important — **a 6-month horizon with very aggressive risk is dangerous.**\\n\\nVery aggressive portfolios (beta 1.05+) can drop **30%+ in a downturn**, and historically it takes **2-3 years to recover** from major crashes. With only 6 months, you could be forced to sell at a significant loss.\\n\\nFor a short horizon, I'd recommend:\\n- **Conservative to moderate risk** with mostly short-duration bonds (SHY, duration 1.9 years)\\n- Expected returns of 3-7%, but your capital is much safer\\n\\nWould you like me to build something safer for your timeline, or is the 6-month horizon flexible?"}
 
 CRITICAL RULES:
 - When ready=false, the "response" field IS your reply to the user. Make it conversational, helpful, human.
@@ -2907,12 +2988,15 @@ RULES:
                 treasury_pct = parsed.get("treasury_pct")
                 tickers = parsed.get("tickers", [])
                 return_target = parsed.get("return_target")
+                horizon = parsed.get("horizon")
 
                 # IMPORTANT: Save the detected risk level to session state for Risk Profile display
                 if "user_profile" not in st.session_state or not st.session_state.user_profile:
                     st.session_state.user_profile = {"constraints": {}}
                 st.session_state.user_profile["risk_level"] = risk_level
                 st.session_state.user_profile["budget"] = budget
+                if horizon:
+                    st.session_state.user_profile["horizon"] = horizon
 
                 # When user tells chatbot a risk level, ALWAYS assign a random beta within that range
                 # This ensures their stated preference is reflected in the target beta
@@ -2961,7 +3045,8 @@ RULES:
                     budget=budget,
                     treasury_pct=treasury_pct,
                     specific_stocks=tickers if tickers else None,
-                    return_target=return_target
+                    return_target=return_target,
+                    horizon=horizon,
                 )
 
                 st.session_state.pending_portfolio = portfolio
@@ -2973,8 +3058,12 @@ RULES:
 **Target Beta:** {random_beta} (assigned within {risk_level.replace('_', ' ')} range)
 **Budget:** ${budget:,.0f}
 """
+                if horizon:
+                    horizon_label = cls.HORIZON_PROFILES.get(horizon, {}).get("label", horizon)
+                    response += f"**Horizon:** {horizon_label}\n"
                 if return_target:
-                    response += f"**Target Return:** {return_target*100:.0f}%\n"
+                    ret_range = cls.RETURN_RANGES.get(risk_level, (0, 0))
+                    response += f"**Target Return:** {return_target*100:.0f}% (realistic range for {risk_level.replace('_', ' ')}: {ret_range[0]*100:.0f}-{ret_range[1]*100:.0f}%)\n"
                 if treasury_pct:
                     response += f"**Treasury Allocation:** {treasury_pct*100:.0f}%\n"
                 if tickers:
