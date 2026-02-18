@@ -2752,6 +2752,14 @@ You send data to the engine by setting ready=true. The engine CANNOT talk to the
 
 If you are missing ANY of these, set ready=false and keep talking until you have them.
 
+SMALL BUDGET WARNING: ETFs cost $25-$500+ per share. Fractional shares are NOT supported.
+- Under $500: warn the user that a diversified portfolio is difficult. They may only be able
+  to buy 1-2 cheap ETFs. Suggest they either increase their budget, use a fractional-share
+  broker (Fidelity, Schwab, Robinhood), or accept a simpler portfolio with fewer positions.
+- $500-$1000: workable but limited diversification.
+- $1000+: good for a diversified portfolio.
+- You should STILL set ready=true if they understand the limitation and want to proceed.
+
 === HOW TO HAVE A GOOD CONVERSATION ===
 - Be warm, human, and educational. Many users are beginners.
 - Ask 1-2 focused questions at a time, not a wall of questions.
@@ -3115,16 +3123,34 @@ RULES:
 | Ticker | Name | Allocation | Amount |
 |--------|------|------------|--------|
 """
+                affordable_count = 0
+                unaffordable = []
                 for pos in portfolio.get("positions", []):
                     pos_alloc = (pos.get('allocation', 0) or 0) * 100
                     pos_amt = pos.get('dollar_amount', 0) or 0
-                    response += f"| {pos.get('ticker', '?')} | {pos.get('name', '?')} | {pos_alloc:.1f}% | ${pos_amt:,.0f} |\n"
+                    price = pos.get('current_price', 0) or 0
+                    can_afford = pos_amt >= price and price > 0
+                    marker = "" if can_afford else " ⚠️"
+                    response += f"| {pos.get('ticker', '?')} | {pos.get('name', '?')} | {pos_alloc:.1f}% | ${pos_amt:,.0f}{marker} |\n"
+                    if can_afford:
+                        affordable_count += 1
+                    else:
+                        unaffordable.append(f"{pos.get('ticker', '?')} (${price:,.0f}/share)")
 
                 response += f"""
 **Expected Return:** {exp_ret:.1f}% (based on historical data)
 **Portfolio Volatility:** {port_risk:.1f}%
+"""
+                if unaffordable:
+                    response += f"\n⚠️ **Budget warning:** With ${display_budget:,.0f}, you can't buy whole shares of: {', '.join(unaffordable)}. "
+                    if affordable_count == 0:
+                        response += (f"Your budget is too small for this portfolio. "
+                                     f"You need at least **~$500-$1,000** for a diversified ETF portfolio, "
+                                     f"or use a broker with fractional shares (Fidelity, Schwab, Robinhood).\n")
+                    else:
+                        response += f"These will be skipped — only {affordable_count} positions will be added.\n"
 
-*Say 'yes' or 'confirm' to add these positions to your portfolio.*"""
+                response += "\n*Say 'yes' or 'confirm' to add these positions to your portfolio.*"
 
                 return response
 
@@ -3369,6 +3395,7 @@ What would you like to do?"""
                 # User confirmed — add positions to portfolio
                 portfolio = st.session_state.pending_portfolio
                 added_count = 0
+                skipped_tickers = []
                 for pos in portfolio["positions"]:
                     ticker = pos["ticker"]
                     dollar_amount = pos.get("dollar_amount", 0)
@@ -3381,16 +3408,7 @@ What would you like to do?"""
                         else:
                             current_price = 100
 
-                    # Use fractional shares for small budgets so total exposure matches the budget
-                    # For larger amounts, use whole shares
-                    if current_price > 0 and dollar_amount > 0:
-                        raw_quantity = dollar_amount / current_price
-                        if raw_quantity >= 1:
-                            quantity = int(raw_quantity)  # Whole shares when affordable
-                        else:
-                            quantity = round(raw_quantity, 4)  # Fractional shares for small budgets
-                    else:
-                        quantity = 0
+                    quantity = int(dollar_amount / current_price) if current_price > 0 else 0
 
                     if quantity > 0:
                         pos_type = pos.get("type", "equity").lower()
@@ -3415,9 +3433,25 @@ What would you like to do?"""
                         }
                         st.session_state.portfolio.append(position)
                         added_count += 1
+                    else:
+                        skipped_tickers.append(f"{ticker} (${current_price:.0f}/share)")
 
                 st.session_state.pending_portfolio = None
-                return f"✅ **Done!** Added {added_count} positions to your portfolio. Check the **Portfolio** tab to see them."
+                if added_count == 0:
+                    return (f"**Your budget of ${portfolio.get('total_budget', 0):,.0f} is too small to buy "
+                            f"whole shares of these ETFs.** Most ETFs cost $50-$500+ per share, so you'd "
+                            f"need at least **~$500-$1,000** for a diversified portfolio.\n\n"
+                            f"**Options:**\n"
+                            f"1. Increase your budget to at least $500\n"
+                            f"2. Use a broker that supports fractional shares (Fidelity, Schwab, Robinhood)\n"
+                            f"3. Start with 1-2 affordable ETFs like **SCHD** (~$27) or **SHY** (~$82)\n\n"
+                            f"Want me to build a simpler portfolio with just the ETFs you can afford?")
+
+                result_msg = f"✅ **Done!** Added {added_count} positions to your portfolio. Check the **Portfolio** tab to see them."
+                if skipped_tickers:
+                    result_msg += (f"\n\n⚠️ **Skipped {len(skipped_tickers)} positions** (budget too small for whole shares): "
+                                   f"{', '.join(skipped_tickers)}")
+                return result_msg
 
             else:
                 # User said something OTHER than "yes" while a portfolio is pending
@@ -3675,10 +3709,9 @@ I can help you:
                                 except:
                                     current_price = 100
 
-                            # Calculate quantity — use fractional shares for small budgets
+                            # Calculate quantity — whole shares only
                             if current_price > 0 and dollar_amount > 0:
-                                raw_qty = dollar_amount / current_price
-                                quantity = int(raw_qty) if raw_qty >= 1 else round(raw_qty, 4)
+                                quantity = int(dollar_amount / current_price)
                             else:
                                 quantity = 0
 
