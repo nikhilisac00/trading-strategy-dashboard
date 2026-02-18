@@ -2803,6 +2803,9 @@ User: "I have $250, I'm scared of losing it"
 User: "maybe something in between, not too risky"
 → {"intent":"conversation","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"Still vague — need them to pick a specific level","response":"Sounds like you're leaning toward **conservative** or **moderate**. Let me make it concrete:\\n\\n- **Conservative** (beta 0.30-0.54): Your $250 might dip to ~$230 in a bad month, but recovers quickly. Returns around 5-7%.\\n- **Moderate** (beta 0.55-0.84): Your $250 might dip to ~$210 in a bad month, but higher long-term growth at 7-9%.\\n\\nWhich one sounds more like you? Or I can just go with **conservative** since protecting your money seems important to you."}
 
+User: "maybe aggressive or moderate"
+→ {"intent":"conversation","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"Two options — need them to pick ONE specific level","response":"Good, we're narrowing it down! Let me help you choose between the two:\\n\\n- **Moderate** (beta 0.55-0.84): ~65% stocks, ~35% bonds/treasury. Expected returns of 7-9%. Your portfolio might dip 15% in a bad month but recovers well. Good balance of growth and safety.\\n- **Aggressive** (beta 0.85-1.04): ~85% stocks, minimal bonds. Expected returns of 9-12%. Could drop 20-25% in a downturn — you need to be okay riding that out.\\n\\n**Key question:** If your portfolio dropped 20% in a bad month, would you hold steady or want to sell? If you'd hold → aggressive. If that stresses you → moderate."}
+
 User: "let's go conservative" (after conversation)
 → {"intent":"create_portfolio","ready":true,"risk_level":"conservative","budget":250,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"Have risk level (conservative) and budget ($250 from history) — engine has everything it needs","response":""}
 
@@ -3480,6 +3483,19 @@ What would you like to do?"""
             gpt_intent = chatgpt_parsed.get("intent", "unknown")
             gpt_ready = chatgpt_parsed.get("ready", False)
             gpt_response = chatgpt_parsed.get("response", "")
+
+            # ALWAYS save partial info from every message (budget, risk, horizon, etc.)
+            # so values persist across conversation turns even when ready=false
+            if "user_profile" not in st.session_state or not st.session_state.user_profile:
+                st.session_state.user_profile = {"constraints": {}}
+            if chatgpt_parsed.get("budget") and chatgpt_parsed["budget"] > 0:
+                st.session_state.user_profile["budget"] = chatgpt_parsed["budget"]
+            if chatgpt_parsed.get("risk_level"):
+                st.session_state.user_profile["risk_level"] = chatgpt_parsed["risk_level"]
+            if chatgpt_parsed.get("horizon"):
+                st.session_state.user_profile["horizon"] = chatgpt_parsed["horizon"]
+            if chatgpt_parsed.get("return_target"):
+                st.session_state.user_profile["return_target"] = chatgpt_parsed["return_target"]
 
             # NOT READY — ChatGPT wants to keep talking (ask follow-ups, explain, etc.)
             if not gpt_ready and gpt_response:
