@@ -3381,7 +3381,17 @@ What would you like to do?"""
                         else:
                             current_price = 100
 
-                    quantity = int(dollar_amount / current_price) if current_price > 0 else 0
+                    # Use fractional shares for small budgets so total exposure matches the budget
+                    # For larger amounts, use whole shares
+                    if current_price > 0 and dollar_amount > 0:
+                        raw_quantity = dollar_amount / current_price
+                        if raw_quantity >= 1:
+                            quantity = int(raw_quantity)  # Whole shares when affordable
+                        else:
+                            quantity = round(raw_quantity, 4)  # Fractional shares for small budgets
+                    else:
+                        quantity = 0
+
                     if quantity > 0:
                         pos_type = pos.get("type", "equity").lower()
                         if pos_type in ["stock"]:
@@ -3665,11 +3675,12 @@ I can help you:
                                 except:
                                     current_price = 100
 
-                            # Calculate quantity
+                            # Calculate quantity — use fractional shares for small budgets
                             if current_price > 0 and dollar_amount > 0:
-                                quantity = max(1, int(dollar_amount / current_price))
+                                raw_qty = dollar_amount / current_price
+                                quantity = int(raw_qty) if raw_qty >= 1 else round(raw_qty, 4)
                             else:
-                                quantity = 1  # Minimum 1 share
+                                quantity = 0
 
                             # Determine display type based on asset type
                             pos_type = pos.get("type", "equity").lower()
