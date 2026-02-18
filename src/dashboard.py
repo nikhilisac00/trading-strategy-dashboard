@@ -3037,7 +3037,18 @@ RULES:
 
                 # Pull budget from session state if parser didn't return one (conversation carry-forward)
                 if not budget or budget <= 0:
-                    budget = st.session_state.user_profile.get("budget", 10000)
+                    budget = st.session_state.user_profile.get("budget")
+                # Last resort: scan chat history for dollar amounts
+                if not budget or budget <= 0:
+                    for msg in reversed(st.session_state.get("chat_history", [])):
+                        if msg.get("role") == "user":
+                            hist_match = re.search(r'\$\s*([\d,]+(?:\.\d+)?)', msg.get("content", ""))
+                            if hist_match:
+                                budget = float(hist_match.group(1).replace(",", ""))
+                                if budget > 0:
+                                    break
+                if not budget or budget <= 0:
+                    budget = 10000  # Absolute last fallback
 
                 # SERVER-SIDE CONFLICT CHECK — safety net if parser missed it
                 if return_target:
@@ -3598,7 +3609,9 @@ What would you like to do?"""
             if gpt_ready and gpt_intent in ("create_portfolio", "add_stock", "rebalance", "check_portfolio"):
                 if chatgpt_parsed.get("risk_level"):
                     parsed["risk_level"] = chatgpt_parsed["risk_level"]
-                if chatgpt_parsed.get("budget"):
+                # Budget: rule-based extraction (regex from user text) takes priority over
+                # ChatGPT's guess, which often "corrects" small amounts to $10,000+
+                if not parsed.get("budget") and chatgpt_parsed.get("budget"):
                     parsed["budget"] = chatgpt_parsed["budget"]
                 if chatgpt_parsed.get("tickers"):
                     existing = set(parsed.get("tickers", []))
