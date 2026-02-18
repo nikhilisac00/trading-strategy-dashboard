@@ -3007,12 +3007,27 @@ RULES:
             if intent == "create_portfolio":
                 risk_level = parsed.get("risk_level") or "moderate"
                 budget = parsed.get("budget")
-                if not budget or budget <= 0:
-                    budget = 10000  # Default only when truly not provided
                 treasury_pct = parsed.get("treasury_pct")
                 tickers = parsed.get("tickers", [])
                 return_target = parsed.get("return_target")
                 horizon = parsed.get("horizon")
+
+                # SAVE to session state FIRST — before any early returns from conflict checks
+                # so values persist across conversation turns
+                if "user_profile" not in st.session_state or not st.session_state.user_profile:
+                    st.session_state.user_profile = {"constraints": {}}
+                if budget and budget > 0:
+                    st.session_state.user_profile["budget"] = budget
+                if risk_level:
+                    st.session_state.user_profile["risk_level"] = risk_level
+                if horizon:
+                    st.session_state.user_profile["horizon"] = horizon
+                if return_target:
+                    st.session_state.user_profile["return_target"] = return_target
+
+                # Pull budget from session state if parser didn't return one (conversation carry-forward)
+                if not budget or budget <= 0:
+                    budget = st.session_state.user_profile.get("budget", 10000)
 
                 # SERVER-SIDE CONFLICT CHECK — safety net if parser missed it
                 if return_target:
@@ -3045,14 +3060,6 @@ RULES:
                             f"with short-duration bonds (SHY). Expected returns of 3-7%, but your "
                             f"capital is much safer.\n\n"
                             f"Would you like a safer portfolio for your timeline, or is your horizon flexible?")
-
-                # IMPORTANT: Save the detected risk level to session state for Risk Profile display
-                if "user_profile" not in st.session_state or not st.session_state.user_profile:
-                    st.session_state.user_profile = {"constraints": {}}
-                st.session_state.user_profile["risk_level"] = risk_level
-                st.session_state.user_profile["budget"] = budget
-                if horizon:
-                    st.session_state.user_profile["horizon"] = horizon
 
                 # When user tells chatbot a risk level, ALWAYS assign a random beta within that range
                 # This ensures their stated preference is reflected in the target beta
