@@ -2842,6 +2842,13 @@ User: "I need this money in 6 months, go very aggressive"
 → {"intent":"conversation","ready":false,"risk_level":"very_aggressive","budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":"short","reasoning":"CONFLICT: short horizon + very aggressive risk — drawdown warning needed","response":"I hear you want maximum returns, but I need to flag something important — **a 6-month horizon with very aggressive risk is dangerous.**\\n\\nVery aggressive portfolios (beta 1.05+) can drop **30%+ in a downturn**, and historically it takes **2-3 years to recover** from major crashes. With only 6 months, you could be forced to sell at a significant loss.\\n\\nFor a short horizon, I'd recommend:\\n- **Conservative to moderate risk** with mostly short-duration bonds (SHY, duration 1.9 years)\\n- Expected returns of 3-7%, but your capital is much safer\\n\\nWould you like me to build something safer for your timeline, or is the 6-month horizon flexible?"}
 
 CRITICAL RULES:
+- CONFLICT CHECK (DO THIS FIRST — before setting ready=true):
+  If return_target exists AND risk_level exists, check: is return_target > the max for that risk level?
+  Caps: very_conservative=5%, conservative=7%, moderate=9%, aggressive=12%, very_aggressive=16%.
+  If YES → set ready=false, explain the conflict in "response" using DRIVER data (beta ranges, historical returns).
+  Example: user wants 20% but is scared → very_conservative max is 5%. Set ready=false and explain.
+  If horizon="short" and risk_level is aggressive/very_aggressive → set ready=false, warn about drawdown.
+  NEVER set ready=true when there is a conflict. The user must resolve it first.
 - When ready=false, the "response" field IS your reply to the user. Make it conversational, helpful, human.
 - ALWAYS EXPLAIN YOUR REASONING in the response. Don't just ask questions — share your thinking.
   For example: "Based on what you've told me, you sound like you lean aggressive — you're okay with
@@ -3004,6 +3011,38 @@ RULES:
                 tickers = parsed.get("tickers", [])
                 return_target = parsed.get("return_target")
                 horizon = parsed.get("horizon")
+
+                # SERVER-SIDE CONFLICT CHECK — safety net if parser missed it
+                if return_target:
+                    ret_caps = {"very_conservative": 0.05, "conservative": 0.07, "moderate": 0.09,
+                                "aggressive": 0.12, "very_aggressive": 0.16}
+                    max_return = ret_caps.get(risk_level, 0.09)
+                    if return_target > max_return:
+                        risk_label = risk_level.replace('_', ' ')
+                        return (f"**I need to flag a conflict before building your portfolio.**\n\n"
+                                f"You're targeting **{return_target*100:.0f}% returns** with a "
+                                f"**{risk_label}** risk profile. But {risk_label} portfolios "
+                                f"(beta {FinancialPlannerAI.BETA_TARGETS[risk_level]['min']}-"
+                                f"{FinancialPlannerAI.BETA_TARGETS[risk_level]['max']}) "
+                                f"historically return **{max_return*100:.0f}% max annually**.\n\n"
+                                f"To get {return_target*100:.0f}% returns, you'd need concentrated "
+                                f"high-beta stocks (TSLA ~2.0, NVDA ~1.7) — which is very aggressive, "
+                                f"not {risk_label}.\n\n"
+                                f"**Your options:**\n"
+                                f"1. Keep {risk_label} risk and accept {max_return*100:.0f}% max returns\n"
+                                f"2. Move to a higher risk level for higher return potential\n\n"
+                                f"What would you prefer?")
+
+                if horizon == "short" and risk_level in ("aggressive", "very_aggressive"):
+                    risk_label = risk_level.replace('_', ' ')
+                    return (f"**Warning: short horizon + {risk_label} risk is dangerous.**\n\n"
+                            f"{risk_label.title()} portfolios can drop **30%+** in a downturn and "
+                            f"take **2-3 years to recover**. With a short horizon, you could be "
+                            f"forced to sell at a significant loss.\n\n"
+                            f"For short-term investing, I'd recommend conservative to moderate risk "
+                            f"with short-duration bonds (SHY). Expected returns of 3-7%, but your "
+                            f"capital is much safer.\n\n"
+                            f"Would you like a safer portfolio for your timeline, or is your horizon flexible?")
 
                 # IMPORTANT: Save the detected risk level to session state for Risk Profile display
                 if "user_profile" not in st.session_state or not st.session_state.user_profile:
