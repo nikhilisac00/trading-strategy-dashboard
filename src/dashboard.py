@@ -1070,6 +1070,10 @@ class FinancialPlannerAI:
                           specific_stocks: list = None, horizon: str = None) -> dict:
         """Generate a diversified portfolio based on requirements."""
 
+        # Defensive: ensure budget is never None
+        if budget is None:
+            budget = 10000
+
         profile = cls.RISK_PROFILES.get(risk_level, cls.RISK_PROFILES["moderate"])
         horizon_profile = cls.HORIZON_PROFILES.get(horizon) if horizon else None
 
@@ -2740,17 +2744,24 @@ the user is unsure. Don't rush to create a portfolio — make sure you understan
 
 WHEN TO SET ready=true (GO ahead and create portfolio):
 - HARD REQUIREMENTS — ALL of these must be true:
-  1. You know their risk tolerance (explicitly stated OR confidently inferred from specifics)
+  1. You know their risk tolerance (they used a SPECIFIC word like "conservative", "moderate",
+     "aggressive", or gave enough detail to confidently infer one — NOT just "scared" or "safe")
   2. They have a budget (stated, or implied with enough detail like "I have $50k")
   3. They've given SPECIFIC context — not just "build a portfolio" but WHY, for WHAT, with WHAT risk comfort
+  4. There has been at least ONE back-and-forth exchange in the conversation history.
+     If this is the user's FIRST substantive message, set ready=false and have a conversation first.
+     The only exception is if they give ALL details in one message AND use a specific risk level word
+     (e.g., "I have $50k, moderate risk, long term, want growth" → ready=true).
 - The user says things like "do it", "let's go", "implement", "create it", "build it",
   "sounds good", "go ahead", "make the portfolio", "set it up" — BUT ONLY after you've already
   discussed their goals in prior messages. These are CONFIRMATION words, not conversation starters.
-- Example: "I have $1000, want TSLA, but don't want to lose everything" → ready=true (has budget, stock, risk hint)
 - Example: "sounds good, let's do moderate" (after discussion) → ready=true
-- When you DO have enough info, set ready=true and let the engine build it.
+- When you DO have enough info AND have had a real conversation, set ready=true and let the engine build it.
   Do NOT describe a full portfolio in your response text and leave ready=false.
   The engine will show the actual positions table with a confirm/deny prompt.
+- IMPORTANT: "I don't want to lose it all" or "I'm scared" is NOT an explicit risk level.
+  These express fear but don't tell you HOW conservative they want to be. Ask follow-ups
+  to determine if they mean very_conservative (mostly bonds) or conservative (some stocks).
 
 WHEN TO SET ready=false (KEEP TALKING — ask follow-up questions):
 - They're unsure about their risk level and asking for your opinion
@@ -2824,7 +2835,7 @@ User: "what goals do you want to know?"
 → {"intent":"conversation","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"User is asking a question — answer it, don't build anything","response":"Great question! Here's what helps me build the right portfolio for you:\\n\\n- **Time horizon**: Are you investing for 1 year, 5 years, or 20+ years? This changes everything — short-term means we need to be careful, long-term means we can ride out market dips.\\n- **Risk comfort**: How would you feel if your portfolio dropped 15-20% in a bad month? Some people shrug it off, others lose sleep.\\n- **Purpose**: Is this for retirement, a house down payment, general wealth building, or something else?\\n- **Budget**: How much are you looking to invest?\\n\\nJust tell me what feels right and we'll go from there!"}
 
 User: "I have $1000 and people said use TSLA but I don't want to lose everything"
-→ {"intent":"create_portfolio","ready":true,"risk_level":"moderate","budget":1000,"tickers":["TSLA"],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"Wants TSLA but fears losses — moderate balances both","response":""}
+→ {"intent":"conversation","ready":false,"risk_level":null,"budget":1000,"tickers":["TSLA"],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"Has budget and stock preference but fear of loss is vague — need to clarify risk level and goals","response":"I can definitely help you invest that $1,000! And it's smart that you're thinking about TSLA — it's a high-profile stock. But before I build anything, let me help you understand what you're getting into:\\n\\n**TSLA has a beta of ~2.0** — that means it moves TWICE as much as the market. If the S&P 500 drops 10%, TSLA could drop 20%. That's exciting on the way up, but scary on the way down.\\n\\nSince you don't want to lose everything, here's what I'm thinking:\\n- We could put a **small portion** (maybe 10-15%) in TSLA and balance the rest with safer investments\\n- Or we could skip individual stocks and go with diversified ETFs that spread your risk\\n\\n**Quick question:** How would you feel if your $1,000 dropped to $800 temporarily? Would you hold on and wait, or would that keep you up at night?"}
 
 User: "Im a risk taker, I want to make money but not sure if I'm risky or very risky, what do you think?"
 → {"intent":"conversation","ready":false,"risk_level":null,"budget":null,"tickers":[],"treasury_pct":null,"return_target":null,"horizon":null,"reasoning":"User is unsure between aggressive and very aggressive — need more info","response":"Great question! Let me help you figure that out. A few things to consider:\\n\\n- **Aggressive** means you're comfortable with market swings — maybe 15-20% drops — but you still want some diversification. Think growth stocks + some bonds as a safety net.\\n- **Very Aggressive** means you're okay with BIG swings (30%+ drops possible) for maximum upside — heavy tech, high-beta stocks, minimal bonds.\\n\\nHere's what would help me decide: **How would you feel if your portfolio dropped 25% in a month?** Would you hold steady or panic sell? Also, **what's your investment timeline** — are we talking 2 years or 20 years?"}
