@@ -3074,10 +3074,10 @@ RULES:
 **Budget:** ${budget:,.0f}
 """
                 if horizon:
-                    horizon_label = cls.HORIZON_PROFILES.get(horizon, {}).get("label", horizon)
+                    horizon_label = FinancialPlannerAI.HORIZON_PROFILES.get(horizon, {}).get("label", horizon)
                     response += f"**Horizon:** {horizon_label}\n"
                 if return_target:
-                    ret_range = cls.RETURN_RANGES.get(risk_level, (0, 0))
+                    ret_range = FinancialPlannerAI.RETURN_RANGES.get(risk_level, (0, 0))
                     response += f"**Target Return:** {return_target*100:.0f}% (realistic range for {risk_level.replace('_', ' ')}: {ret_range[0]*100:.0f}-{ret_range[1]*100:.0f}%)\n"
                 if treasury_pct:
                     response += f"**Treasury Allocation:** {treasury_pct*100:.0f}%\n"
