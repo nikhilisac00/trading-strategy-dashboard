@@ -1037,13 +1037,11 @@ class FinancialPlannerAI:
             if budget_match:
                 amount_str = budget_match.group(1).replace(',', '')
                 amount = float(amount_str)
-                # Check for k/K multiplier in the match context
+                # Check for k/K multiplier IMMEDIATELY after the number (e.g., "$50k", "50K")
                 match_end = budget_match.end()
                 if match_end < len(message) and message[match_end:match_end+1].lower() == 'k':
                     amount *= 1000
-                elif 'k' in message_lower and amount < 10000:
-                    amount *= 1000
-                if amount >= 1000:  # Reasonable budget threshold
+                if amount > 0:  # Accept any positive budget
                     parsed["budget"] = amount
                     break
 
@@ -3567,12 +3565,24 @@ What would you like to do?"""
             gpt_ready = chatgpt_parsed.get("ready", False)
             gpt_response = chatgpt_parsed.get("response", "")
 
+            # SERVER-SIDE budget extraction — fallback if parser missed the dollar amount
+            parsed_budget = chatgpt_parsed.get("budget")
+            if not parsed_budget or parsed_budget <= 0:
+                budget_match = re.search(r'\$\s*([\d,]+(?:\.\d+)?)\s*(?:k)?', user_message, re.IGNORECASE)
+                if budget_match:
+                    raw_budget = budget_match.group(1).replace(",", "")
+                    extracted = float(raw_budget)
+                    if "k" in user_message[budget_match.end()-1:budget_match.end()+1].lower():
+                        extracted *= 1000
+                    chatgpt_parsed["budget"] = extracted
+                    parsed_budget = extracted
+
             # ALWAYS save partial info from every message (budget, risk, horizon, etc.)
             # so values persist across conversation turns even when ready=false
             if "user_profile" not in st.session_state or not st.session_state.user_profile:
                 st.session_state.user_profile = {"constraints": {}}
-            if chatgpt_parsed.get("budget") and chatgpt_parsed["budget"] > 0:
-                st.session_state.user_profile["budget"] = chatgpt_parsed["budget"]
+            if parsed_budget and parsed_budget > 0:
+                st.session_state.user_profile["budget"] = parsed_budget
             if chatgpt_parsed.get("risk_level"):
                 st.session_state.user_profile["risk_level"] = chatgpt_parsed["risk_level"]
             if chatgpt_parsed.get("horizon"):
