@@ -2776,8 +2776,11 @@ WHEN TO SET ready=false (KEEP TALKING — ask follow-up questions):
 - Example: "probably build a portfolio" → ready=false (vague, no specifics at all — ask about risk, budget, goals)
 - Example: "what goals do you want to know?" → ready=false (they're asking YOU a question, answer it)
 - Example: "I want to invest" → ready=false (no risk, no budget, no goals — start a conversation)
+- Example: "maybe something in between" → ready=false (vague preference — ask which specific level: moderate? conservative? explain the options)
+- Example: "I have $150, I'm scared of losing it all" → ready=false (fear is not a risk level — ask more about their comfort zone)
 - IMPORTANT: If they're asking you to EXPLAIN risk levels or concepts → ready=false.
   If they're asking you a question of ANY kind → ready=false, answer the question.
+  If they say something vague like "in between", "something balanced", "not too risky" → ready=false, clarify exactly which risk level.
   Only set ready=true when they give you enough SPECIFICS to build something.
 
 DEFAULT BEHAVIOR: When in doubt, set ready=false. It is MUCH better to ask one more question
@@ -3125,12 +3128,20 @@ RULES:
 
                 st.session_state.pending_portfolio = portfolio
 
-                # Format response
+                # Format response — guard against None values
+                display_budget = budget if budget else 10000
+                display_beta = random_beta if random_beta else 0.70
+                eq_pct = (portfolio.get('summary', {}).get('equity', 0) or 0) * 100
+                tr_pct = (portfolio.get('summary', {}).get('treasury', 0) or 0) * 100
+                bn_pct = (portfolio.get('summary', {}).get('bonds', 0) or 0) * 100
+                exp_ret = (portfolio.get('expected_return', 0) or 0) * 100
+                port_risk = (portfolio.get('portfolio_risk', 0) or 0) * 100
+
                 response = f"""## Portfolio Created for You
 
 **Your Profile:** {risk_level.replace('_', ' ').title()}
-**Target Beta:** {random_beta} (assigned within {risk_level.replace('_', ' ')} range)
-**Budget:** ${budget:,.0f}
+**Target Beta:** {display_beta} (assigned within {risk_level.replace('_', ' ')} range)
+**Budget:** ${display_budget:,.0f}
 """
                 if horizon:
                     horizon_label = FinancialPlannerAI.HORIZON_PROFILES.get(horizon, {}).get("label", horizon)
@@ -3145,20 +3156,22 @@ RULES:
 
                 response += f"""
 ### Allocation Summary
-- **Equities:** {portfolio['summary']['equity']*100:.0f}%
-- **Treasury:** {portfolio['summary']['treasury']*100:.0f}%
-- **Bonds:** {portfolio['summary']['bonds']*100:.0f}%
+- **Equities:** {eq_pct:.0f}%
+- **Treasury:** {tr_pct:.0f}%
+- **Bonds:** {bn_pct:.0f}%
 
 ### Positions
 | Ticker | Name | Allocation | Amount |
 |--------|------|------------|--------|
 """
-                for pos in portfolio["positions"]:
-                    response += f"| {pos['ticker']} | {pos['name']} | {pos['allocation']*100:.1f}% | ${pos['dollar_amount']:,.0f} |\n"
+                for pos in portfolio.get("positions", []):
+                    pos_alloc = (pos.get('allocation', 0) or 0) * 100
+                    pos_amt = pos.get('dollar_amount', 0) or 0
+                    response += f"| {pos.get('ticker', '?')} | {pos.get('name', '?')} | {pos_alloc:.1f}% | ${pos_amt:,.0f} |\n"
 
                 response += f"""
-**Expected Return:** {portfolio['expected_return']*100:.1f}% (based on historical data)
-**Portfolio Volatility:** {portfolio['portfolio_risk']*100:.1f}%
+**Expected Return:** {exp_ret:.1f}% (based on historical data)
+**Portfolio Volatility:** {port_risk:.1f}%
 
 *Say 'yes' or 'confirm' to add these positions to your portfolio.*"""
 
