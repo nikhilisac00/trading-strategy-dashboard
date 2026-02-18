@@ -2752,13 +2752,13 @@ You send data to the engine by setting ready=true. The engine CANNOT talk to the
 
 If you are missing ANY of these, set ready=false and keep talking until you have them.
 
-SMALL BUDGET WARNING: ETFs cost $25-$500+ per share. Fractional shares are NOT supported.
-- Under $500: warn the user that a diversified portfolio is difficult. They may only be able
-  to buy 1-2 cheap ETFs. Suggest they either increase their budget, use a fractional-share
-  broker (Fidelity, Schwab, Robinhood), or accept a simpler portfolio with fewer positions.
-- $500-$1000: workable but limited diversification.
-- $1000+: good for a diversified portfolio.
-- You should STILL set ready=true if they understand the limitation and want to proceed.
+SMALL BUDGET WARNING: Fractional shares are NOT supported — whole shares only.
+Check the CURRENT ETF PRICES section at the end of this prompt for exact prices.
+- When a user gives you a budget, check which ETFs they can actually afford at current prices.
+- If their budget can't buy at least 3-4 different ETFs, warn them with SPECIFIC prices:
+  "With $250, you can buy SCHD ($27), SHY ($82), and TIP ($50) but NOT SPY ($523) or QQQ ($510)."
+- Suggest: increase budget, use a fractional-share broker, or accept fewer positions.
+- You should STILL set ready=true if they understand and want to proceed.
 
 === HOW TO HAVE A GOOD CONVERSATION ===
 - Be warm, human, and educational. Many users are beginners.
@@ -2858,13 +2858,52 @@ RULES:
 - NEVER recommend anything outside their risk level's beta range"""
 
     @classmethod
+    def _get_live_etf_prices(cls) -> str:
+        """Fetch current prices for our ETF universe and format as a string for the prompt."""
+        etf_tickers = ["SPY", "QQQ", "VTI", "VXUS", "VGT", "IWM", "VIG", "SCHD",
+                        "TLT", "IEF", "SHY", "TIP", "BND", "LQD", "HYG", "GLD", "VNQ"]
+        # Cache in session state to avoid re-fetching every message
+        cache_key = "_etf_price_cache"
+        if cache_key in st.session_state:
+            cached = st.session_state[cache_key]
+            # Refresh every 10 minutes
+            if (datetime.now() - cached["timestamp"]).seconds < 600:
+                return cached["text"]
+
+        prices = {}
+        for ticker in etf_tickers:
+            try:
+                data = get_stock_data(ticker, period="5d")
+                if "error" not in data and not data["history"].empty:
+                    prices[ticker] = round(float(data["history"]["Close"].iloc[-1]), 2)
+            except Exception:
+                pass
+
+        if not prices:
+            return ""
+
+        lines = ["CURRENT ETF PRICES (live data — use these for budget calculations):"]
+        for ticker, price in sorted(prices.items(), key=lambda x: x[1]):
+            lines.append(f"- {ticker}: ${price:.2f}/share")
+
+        text = "\n".join(lines)
+        st.session_state[cache_key] = {"text": text, "timestamp": datetime.now()}
+        return text
+
+    @classmethod
     def chatgpt_parse_message(cls, user_message: str, chat_history: list) -> dict:
         """Use ChatGPT to understand the user and decide whether to act or keep talking."""
         if not OPENAI_AVAILABLE or openai_client is None:
             return None
 
         try:
-            messages = [{"role": "system", "content": cls.CHATGPT_PARSER_PROMPT}]
+            # Inject live ETF prices into the prompt so ChatGPT knows exact costs
+            live_prices = cls._get_live_etf_prices()
+            prompt_with_prices = cls.CHATGPT_PARSER_PROMPT
+            if live_prices:
+                prompt_with_prices = cls.CHATGPT_PARSER_PROMPT + "\n\n" + live_prices
+
+            messages = [{"role": "system", "content": prompt_with_prices}]
 
             # Include conversation history so ChatGPT can build on prior exchanges
             for msg in chat_history[-12:]:
