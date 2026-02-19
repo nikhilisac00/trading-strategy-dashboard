@@ -2307,7 +2307,7 @@ class SmartFinancialAgent:
             for match in matches:
                 try:
                     amount = float(match.replace(',', '')) * multiplier
-                    if amount >= 1000:
+                    if amount > 0:
                         found_amounts.add(amount)
                 except ValueError:
                     pass
@@ -2583,7 +2583,7 @@ class SmartFinancialAgent:
         if all_money:
             budget = max(all_money)
         elif entities.get("numbers"):
-            large_nums = [n for n in entities["numbers"] if n >= 1000]
+            large_nums = [n for n in entities["numbers"] if n >= 50]
             if large_nums:
                 budget = max(large_nums)
 
