@@ -3561,6 +3561,43 @@ What would you like to do?"""
                 return ("I have a portfolio ready for you! If you have questions about it, feel free to ask. "
                         "Say **'yes'** to add it to your portfolio, or **'no'** to start over.")
 
+        # Step 0.5: Detect if this is a QUESTION about existing portfolio
+        # Questions should NEVER trigger portfolio creation — route to conversation
+        msg_stripped = user_message.strip().lower()
+        is_question = (
+            msg_stripped.endswith("?") or
+            any(msg_stripped.startswith(w) for w in [
+                "why ", "what ", "how ", "when ", "which ", "where ",
+                "is ", "are ", "do ", "does ", "can ", "should ", "could ",
+                "would ", "will ", "tell ", "explain ", "help ",
+            ])
+        )
+
+        # If user has an existing portfolio and asks a question, answer it directly
+        if is_question and st.session_state.get("portfolio") and OPENAI_AVAILABLE:
+            holdings = [f"{p['ticker']} ({p.get('quantity', 0)} shares)" for p in st.session_state.portfolio[:15]]
+            portfolio_context = f"User's current portfolio: {', '.join(holdings)}."
+
+            try:
+                messages = [
+                    {"role": "system", "content": cls.CHATGPT_RESPONDER_PROMPT + "\n\n" + portfolio_context},
+                ]
+                for msg in chat_history[-8:]:
+                    role = msg.get("role", "user")
+                    if role in ("user", "assistant"):
+                        messages.append({"role": role, "content": msg["content"][:500]})
+                messages.append({"role": "user", "content": user_message})
+
+                response = openai_client.chat.completions.create(
+                    model="gpt-4o-mini",
+                    messages=messages,
+                    temperature=0.5,
+                    max_tokens=400,
+                )
+                return response.choices[0].message.content
+            except Exception:
+                pass
+
         # Step 1: Rule-based parsing (fast, free — catches explicit keywords)
         parsed = cls.parse_message_smart(user_message)
         rule_intent = parsed.get("intent", "unknown")
