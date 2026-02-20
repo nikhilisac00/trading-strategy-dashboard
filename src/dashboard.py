@@ -2578,10 +2578,38 @@ class SmartFinancialAgent:
         # Detect return target
         return_target = cls.detect_return_target(text)
 
-        # Get budget (largest money amount, or largest number if no money detected)
+        # Get budget — prefer amounts near budget/invest context words over raw max
         budget = None
         if all_money:
-            budget = max(all_money)
+            # Deduplicate: $5k extracts both 5.0 and 5000.0 from different patterns.
+            # Keep only the largest from each "cluster" (amounts within 1000x of each other
+            # from k/million multipliers are the same entity)
+            deduped = []
+            sorted_money = sorted(all_money, reverse=True)
+            for amt in sorted_money:
+                # Skip if this is a "fragment" of an already-added amount (e.g., 5 is fragment of 5000)
+                if not any(bigger / amt >= 900 and bigger / amt <= 1100 for bigger in deduped if amt > 0):
+                    deduped.append(amt)
+            all_money = deduped
+
+            if len(all_money) == 1:
+                budget = all_money[0]
+            else:
+                # Multiple genuinely different amounts — look for budget context
+                text_lower_b = text.lower()
+                budget_context = re.search(
+                    r'(?:invest|budget|portfolio|put in|start with|have to invest|spend)\s+(?:is\s+|of\s+|:?\s*)?\$?\s*([\d,]+(?:\.\d+)?)\s*(?:k|thousand)?',
+                    text_lower_b
+                )
+                if budget_context:
+                    ctx_amount = float(budget_context.group(1).replace(',', ''))
+                    if 'k' in text_lower_b[budget_context.end()-2:budget_context.end()+1].lower() or 'thousand' in text_lower_b[budget_context.start():budget_context.end()+10]:
+                        ctx_amount *= 1000
+                    closest = min(all_money, key=lambda x: abs(x - ctx_amount))
+                    budget = closest
+                else:
+                    # No context — take max (original behavior, works for single-budget messages)
+                    budget = max(all_money)
         elif entities.get("numbers"):
             large_nums = [n for n in entities["numbers"] if n >= 50]
             if large_nums:
@@ -3434,10 +3462,14 @@ What would you like to do?"""
 
         # Step 0: Handle pending portfolio — confirmation or follow-up questions
         if st.session_state.get("pending_portfolio"):
-            is_confirmation = any(word in user_message.lower() for word in [
-                "yes", "confirm", "do it", "proceed", "add it", "looks good",
-                "go ahead", "approve", "accept", "let's do it", "sounds good",
-            ])
+            # Use word-boundary matching to avoid false positives
+            # "yesterday" should NOT match "yes", "I know" should NOT trigger "no"
+            _msg_lower = user_message.strip().lower()
+            # Check for negation first — "don't proceed", "not confirm", etc.
+            _has_negation = bool(re.search(r"\b(?:don.?t|not|won.?t|can.?t|no|never)\b", _msg_lower))
+            _confirm_re = r'\b(?:yes|confirm|proceed|approve|accept)\b|^(?:do it|add it|looks good|go ahead|let.s do it|sounds good)$'
+            _has_confirm_word = bool(re.search(_confirm_re, _msg_lower))
+            is_confirmation = _has_confirm_word and not _has_negation
 
             if is_confirmation:
                 # User confirmed — add positions to portfolio
@@ -3504,9 +3536,8 @@ What would you like to do?"""
             else:
                 # User said something OTHER than "yes" while a portfolio is pending
                 # → Route to ChatGPT to answer their follow-up question about the portfolio
-                is_rejection = any(word in user_message.lower() for word in [
-                    "no", "cancel", "nevermind", "never mind", "scrap", "start over", "redo",
-                ])
+                _reject_re = r'^(?:no|cancel|nevermind|never mind|scrap|start over|redo|nah|nope)$|^no[,.\s!]'
+                is_rejection = bool(re.search(_reject_re, _msg_lower))
 
                 if is_rejection:
                     st.session_state.pending_portfolio = None
@@ -3568,7 +3599,7 @@ What would you like to do?"""
             msg_stripped.endswith("?") or
             any(msg_stripped.startswith(w) for w in [
                 "why ", "what ", "how ", "when ", "which ", "where ",
-                "is ", "are ", "do ", "does ", "can ", "should ", "could ",
+                "is ", "are ", "does ", "can ", "should ", "could ",
                 "would ", "will ", "tell ", "explain ", "help ",
             ])
         )
@@ -3784,12 +3815,17 @@ I can help you:
                 # Add user message
                 st.session_state.chat_messages.append({"role": "user", "content": user_input})
 
-                # Check for portfolio confirmation
-                if any(word in user_input.lower() for word in ["yes", "add", "confirm", "do it", "proceed"]):
+                # Check for portfolio confirmation — use word-boundary matching to avoid
+                # false positives like "add TSLA" matching "add" or "yesterday" matching "yes"
+                _sb_lower = user_input.strip().lower()
+                _sb_negation = bool(re.search(r"\b(?:don.?t|not|won.?t|can.?t|no|never)\b", _sb_lower))
+                _sb_confirm = bool(re.search(r'\b(?:yes|confirm|proceed|approve|accept)\b|^(?:do it|go ahead|sounds good|looks good|let.s do it|add it)$', _sb_lower))
+                if _sb_confirm and not _sb_negation:
                     if st.session_state.get("pending_portfolio"):
                         portfolio = st.session_state.pending_portfolio
                         added_count = 0
                         added_tickers = []
+                        skipped_tickers = []
 
                         # Add ALL positions to portfolio
                         for pos in portfolio["positions"]:
@@ -3842,15 +3878,29 @@ I can help you:
                                 "maturity": None,
                                 "id": len(st.session_state.portfolio)
                             }
-                            st.session_state.portfolio.append(position)
-                            added_count += 1
-                            added_tickers.append(ticker)
+                            if quantity > 0:
+                                st.session_state.portfolio.append(position)
+                                added_count += 1
+                                added_tickers.append(ticker)
+                            else:
+                                skipped_tickers.append(f"{ticker} (${current_price:.0f}/share)")
 
-                        st.session_state.chat_messages.append({
-                            "role": "assistant",
-                            "content": f"✅ **Done!** Added {added_count} positions: {', '.join(added_tickers)}. Check the **Portfolio** tab."
-                        })
                         st.session_state.pending_portfolio = None
+                        if added_count == 0:
+                            st.session_state.chat_messages.append({
+                                "role": "assistant",
+                                "content": (f"**Your budget is too small to buy whole shares of these ETFs.** "
+                                            f"Most ETFs cost $50-$500+ per share. Try increasing your budget to at least $500, "
+                                            f"or use a broker with fractional shares (Fidelity, Schwab, Robinhood).")
+                            })
+                        else:
+                            msg = f"✅ **Done!** Added {added_count} positions: {', '.join(added_tickers)}. Check the **Portfolio** tab."
+                            if skipped_tickers:
+                                msg += f"\n\n⚠️ Skipped (budget too small for whole shares): {', '.join(skipped_tickers)}"
+                            st.session_state.chat_messages.append({
+                                "role": "assistant",
+                                "content": msg
+                            })
                     else:
                         st.session_state.chat_messages.append({
                             "role": "assistant",
