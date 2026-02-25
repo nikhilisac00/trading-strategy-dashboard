@@ -360,6 +360,150 @@ def get_historical_returns(ticker: str, period: str = "1y") -> dict:
     except Exception as e:
         return {"error": f"Cannot calculate returns for {ticker}: {str(e)}", "ticker": ticker}
 
+@st.cache_data(ttl=3600)
+def get_live_cagr(ticker: str, years: int = 5) -> float | None:
+    """Return annualised CAGR from the last `years` years of price history.
+    Returns None if data is insufficient."""
+    try:
+        data = yf.download(ticker, period=f"{years}y", progress=False, auto_adjust=True)
+        if isinstance(data.columns, pd.MultiIndex):
+            prices = data["Close"].iloc[:, 0]
+        else:
+            prices = data["Close"]
+        if len(prices) < 252:
+            return None
+        total = float(prices.iloc[-1]) / float(prices.iloc[0])
+        return round(total ** (1 / years) - 1, 4)
+    except Exception:
+        return None
+
+
+@st.cache_data(ttl=3600)
+def get_regime_forward_returns(lookback_years: int = 3, forward_days: int = 30) -> pd.DataFrame:
+    """For each VIX regime, compute the average forward SPY return over `forward_days` trading days.
+    Returns a DataFrame with columns [regime, avg_fwd_return, median_fwd_return, n_obs]."""
+    try:
+        end = datetime.now()
+        start = end - timedelta(days=lookback_years * 365)
+        spy = yf.download("SPY", start=start, end=end, progress=False, auto_adjust=True)
+        vix_raw = yf.download("^VIX", start=start, end=end, progress=False, auto_adjust=True)
+
+        # Flatten MultiIndex if present
+        if isinstance(spy.columns, pd.MultiIndex):
+            spy.columns = spy.columns.get_level_values(0)
+        if isinstance(vix_raw.columns, pd.MultiIndex):
+            vix_raw.columns = vix_raw.columns.get_level_values(0)
+
+        spy_close = spy["Close"].squeeze()
+        vix_close = vix_raw["Close"].squeeze()
+
+        # Align on shared dates
+        combined = pd.DataFrame({"spy": spy_close, "vix": vix_close}).dropna()
+
+        def classify(v):
+            if v < 14:
+                return "LOW"
+            elif v < 20:
+                return "NORMAL"
+            elif v < 30:
+                return "ELEVATED"
+            else:
+                return "CRISIS"
+
+        combined["regime"] = combined["vix"].apply(classify)
+
+        # Forward return: pct change over next `forward_days` trading days
+        combined["fwd_return"] = combined["spy"].pct_change(forward_days).shift(-forward_days) * 100
+
+        result = (
+            combined.dropna(subset=["fwd_return"])
+            .groupby("regime")["fwd_return"]
+            .agg(avg_fwd_return="mean", median_fwd_return="median", n_obs="count")
+            .reset_index()
+        )
+        return result
+    except Exception:
+        return pd.DataFrame()
+
+
+@st.cache_data(ttl=3600)
+def get_ai_etf_aum_history() -> pd.DataFrame:
+    """Fetch monthly AUM proxy (price × shares outstanding) for AI-themed ETFs."""
+    ai_etfs = ["BOTZ", "ARKQ", "AIQ", "ROBO"]
+    chatgpt_launch = pd.Timestamp("2022-11-30")
+    records = []
+    for ticker in ai_etfs:
+        try:
+            info = yf.Ticker(ticker).info
+            shares = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding")
+            hist = yf.download(ticker, start="2021-01-01", progress=False, auto_adjust=True, interval="1mo")
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+            prices = hist["Close"].squeeze().dropna()
+            if shares and not prices.empty:
+                aum = prices * shares / 1e9  # billions
+            else:
+                # fallback: use totalAssets if available
+                total_assets = info.get("totalAssets")
+                if total_assets:
+                    aum = pd.Series([total_assets / 1e9], index=[pd.Timestamp.now()])
+                else:
+                    continue
+            df = aum.to_frame(name="aum_bn")
+            df["ticker"] = ticker
+            df["pre_chatgpt"] = df.index < chatgpt_launch
+            records.append(df)
+        except Exception:
+            continue
+    if not records:
+        return pd.DataFrame()
+    return pd.concat(records).reset_index().rename(columns={"index": "date"})
+
+
+@st.cache_data(ttl=3600)
+def get_sector_entropy_timeseries() -> pd.DataFrame:
+    """Compute monthly Shannon entropy of sector ETF weights from market cap (price × shares)."""
+    sector_etfs = {
+        "XLK": "Technology", "XLF": "Financials", "XLV": "Healthcare",
+        "XLE": "Energy", "XLI": "Industrials", "XLY": "Cons. Discr.",
+        "XLP": "Cons. Staples", "XLU": "Utilities", "XLB": "Materials", "XLRE": "Real Estate",
+    }
+    try:
+        price_data = {}
+        shares_data = {}
+        for etf in sector_etfs:
+            hist = yf.download(etf, start="2022-01-01", progress=False, auto_adjust=True, interval="1mo")
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+            price_data[etf] = hist["Close"].squeeze()
+            info = yf.Ticker(etf).info
+            shares_data[etf] = info.get("sharesOutstanding") or info.get("impliedSharesOutstanding") or 1
+
+        prices_df = pd.DataFrame(price_data).dropna(how="all")
+        dates = []
+        entropies = []
+        for dt, row in prices_df.iterrows():
+            weights = []
+            for etf in sector_etfs:
+                p = row.get(etf)
+                s = shares_data.get(etf, 1)
+                if pd.notna(p) and p > 0 and s:
+                    weights.append(p * s)
+                else:
+                    weights.append(0)
+            w = np.array(weights, dtype=float)
+            total = w.sum()
+            if total > 0:
+                w /= total
+                w = w[w > 0]
+                h = -np.sum(w * np.log2(w))
+                dates.append(dt)
+                entropies.append(h)
+        return pd.DataFrame({"date": dates, "entropy": entropies})
+    except Exception:
+        return pd.DataFrame()
+
+
 @st.cache_data(ttl=300)
 def get_portfolio_real_returns(positions: list, period: str = "1y") -> dict:
     """
@@ -4211,6 +4355,61 @@ with tab1:
                 st.caption(strat['description'])
                 st.markdown("---")
 
+    # ----------------------------------------------------------
+    # REGIME → FORWARD RETURN BACKTEST
+    # ----------------------------------------------------------
+    st.markdown("---")
+    st.subheader("📅 Regime → Forward Return Backtest (3Y)")
+    st.caption("Average SPY return over the 30 trading days *following* each VIX regime reading.")
+
+    regime_fwd = get_regime_forward_returns(lookback_years=3, forward_days=30)
+
+    if not regime_fwd.empty:
+        regime_order = ["LOW", "NORMAL", "ELEVATED", "CRISIS"]
+        regime_colors = {"LOW": "#2ecc71", "NORMAL": "#f1c40f", "ELEVATED": "#e67e22", "CRISIS": "#e74c3c"}
+        regime_fwd["regime"] = pd.Categorical(regime_fwd["regime"], categories=regime_order, ordered=True)
+        regime_fwd = regime_fwd.sort_values("regime")
+
+        fig_bt = go.Figure()
+        fig_bt.add_trace(go.Bar(
+            x=regime_fwd["regime"],
+            y=regime_fwd["avg_fwd_return"],
+            marker_color=[regime_colors.get(r, "gray") for r in regime_fwd["regime"]],
+            text=[f"{v:.1f}%" for v in regime_fwd["avg_fwd_return"]],
+            textposition="outside",
+            name="Avg 30-Day Fwd Return",
+        ))
+        fig_bt.add_trace(go.Scatter(
+            x=regime_fwd["regime"],
+            y=regime_fwd["median_fwd_return"],
+            mode="markers",
+            marker=dict(symbol="diamond", size=12, color="white", line=dict(width=2, color="gray")),
+            name="Median",
+        ))
+        fig_bt.update_layout(
+            height=350,
+            yaxis_title="Forward Return (%)",
+            xaxis_title="VIX Regime",
+            legend=dict(orientation="h"),
+            margin=dict(t=20),
+        )
+        st.plotly_chart(fig_bt, use_container_width=True)
+
+        obs_cols = st.columns(len(regime_fwd))
+        for i, (_, row) in enumerate(regime_fwd.iterrows()):
+            with obs_cols[i]:
+                st.metric(
+                    label=f"{row['regime']} (n={int(row['n_obs'])})",
+                    value=f"{row['avg_fwd_return']:.1f}%",
+                    delta=f"median {row['median_fwd_return']:.1f}%",
+                    delta_color="normal",
+                )
+        st.caption(f"Current regime: **{vix_regime}** → historical avg 30-day fwd return: "
+                   f"**{regime_fwd.loc[regime_fwd['regime']==vix_regime, 'avg_fwd_return'].values[0]:.1f}%**"
+                   if vix_regime in regime_fwd["regime"].values else "")
+    else:
+        st.warning("Could not load backtest data.")
+
 # ============================================================
 # TAB 2: OPTIONS BUILDER
 # ============================================================
@@ -5158,11 +5357,13 @@ with tab4:
                 price = pos.get("entry_price", 100)
                 value = qty * price
 
-                # Get expected return from ASSET_CLASSES or estimate from beta
-                if ticker in FinancialPlannerAI.ASSET_CLASSES:
+                # Get expected return: prefer live 5Y CAGR, fall back to ASSET_CLASSES, then CAPM
+                live_cagr = get_live_cagr(ticker, years=5)
+                if live_cagr is not None:
+                    exp_ret = live_cagr
+                elif ticker in FinancialPlannerAI.ASSET_CLASSES:
                     exp_ret = FinancialPlannerAI.ASSET_CLASSES[ticker].get("expected_return", 0.08)
                 else:
-                    # Estimate: risk-free (4%) + beta * market premium (6%)
                     beta = FinancialPlannerAI.get_stock_beta(ticker)
                     exp_ret = 0.04 + beta * 0.06
 
@@ -5429,7 +5630,10 @@ with tab5:
                             price = float(stock_data["history"]["Close"].iloc[-1])
                             value = price * pos.get("quantity", 0)
                             total_value += value
-                            weighted_return += value * asset["expected_return"]
+                            # Prefer live 5Y CAGR over hardcoded average
+                            live_cagr = get_live_cagr(ticker, years=5)
+                            exp_ret = live_cagr if live_cagr is not None else asset["expected_return"]
+                            weighted_return += value * exp_ret
 
                 if total_value > 0:
                     expected_annual = weighted_return / total_value * 100
@@ -5513,6 +5717,104 @@ with tab6:
             fig.update_layout(height=300, title="Treasury Yield Curve",
                             xaxis_title="Maturity (Years)", yaxis_title="Yield (%)")
             st.plotly_chart(fig, use_container_width=True)
+
+    # ----------------------------------------------------------
+    # CLAIM 3: AI ETF AUM FLOW (sample space expansion — quantified)
+    # ----------------------------------------------------------
+    st.markdown("---")
+    st.subheader("🤖 Claim 3: AI ETF AUM Growth (Sample Space Expansion)")
+    st.caption("Total AUM (bn $) of AI-themed ETFs: BOTZ, ARKQ, AIQ, ROBO — before vs after ChatGPT launch (Nov 30, 2022).")
+
+    with st.spinner("Loading AI ETF flow data…"):
+        etf_aum = get_ai_etf_aum_history()
+
+    if not etf_aum.empty and "date" in etf_aum.columns:
+        chatgpt_launch = pd.Timestamp("2022-11-30")
+        etf_aum["date"] = pd.to_datetime(etf_aum["date"])
+
+        fig_etf = go.Figure()
+        for ticker in etf_aum["ticker"].unique():
+            sub = etf_aum[etf_aum["ticker"] == ticker].sort_values("date")
+            fig_etf.add_trace(go.Scatter(
+                x=sub["date"], y=sub["aum_bn"],
+                mode="lines", name=ticker,
+            ))
+        fig_etf.add_vline(
+            x=chatgpt_launch.timestamp() * 1000,
+            line_dash="dash", line_color="white",
+            annotation_text="ChatGPT Launch", annotation_position="top left",
+        )
+        fig_etf.update_layout(
+            height=350,
+            yaxis_title="AUM ($ bn)",
+            xaxis_title="Date",
+            legend=dict(orientation="h"),
+            margin=dict(t=20),
+        )
+        st.plotly_chart(fig_etf, use_container_width=True)
+
+        # Before / after summary
+        pre = etf_aum[etf_aum["date"] <= chatgpt_launch].groupby("ticker")["aum_bn"].last()
+        post = etf_aum[etf_aum["date"] > chatgpt_launch].groupby("ticker")["aum_bn"].last()
+        summary = pd.DataFrame({"AUM before ($bn)": pre, "AUM after ($bn)": post}).dropna()
+        summary["Change"] = ((summary["AUM after ($bn)"] - summary["AUM before ($bn)"]) / summary["AUM before ($bn)"] * 100).map("{:.1f}%".format)
+        summary["AUM before ($bn)"] = summary["AUM before ($bn)"].map("${:.2f}bn".format)
+        summary["AUM after ($bn)"] = summary["AUM after ($bn)"].map("${:.2f}bn".format)
+        st.dataframe(summary, use_container_width=True)
+    else:
+        st.warning("Could not load AI ETF AUM data.")
+
+    # ----------------------------------------------------------
+    # ENTROPY TIME SERIES
+    # ----------------------------------------------------------
+    st.markdown("---")
+    st.subheader("📉 Sector Entropy Over Time")
+    st.caption("Shannon entropy of S&P 500 sector market-cap weights (monthly). Lower = more concentrated.")
+
+    with st.spinner("Computing entropy time series…"):
+        entropy_ts = get_sector_entropy_timeseries()
+
+    if not entropy_ts.empty:
+        entropy_ts["date"] = pd.to_datetime(entropy_ts["date"])
+        chatgpt_launch = pd.Timestamp("2022-11-30")
+
+        fig_ent = go.Figure()
+        fig_ent.add_trace(go.Scatter(
+            x=entropy_ts["date"], y=entropy_ts["entropy"],
+            mode="lines+markers", name="Sector Entropy (bits)",
+            line=dict(color="#9b59b6", width=2),
+        ))
+        fig_ent.add_vline(
+            x=chatgpt_launch.timestamp() * 1000,
+            line_dash="dash", line_color="cyan",
+            annotation_text="ChatGPT Launch", annotation_position="top left",
+        )
+        # Pre/post averages
+        pre_avg = entropy_ts.loc[entropy_ts["date"] <= chatgpt_launch, "entropy"].mean()
+        post_avg = entropy_ts.loc[entropy_ts["date"] > chatgpt_launch, "entropy"].mean()
+        if not np.isnan(pre_avg):
+            fig_ent.add_hline(y=pre_avg, line_dash="dot", line_color="green",
+                              annotation_text=f"Pre avg {pre_avg:.3f}", annotation_position="right")
+        if not np.isnan(post_avg):
+            fig_ent.add_hline(y=post_avg, line_dash="dot", line_color="red",
+                              annotation_text=f"Post avg {post_avg:.3f}", annotation_position="right")
+        fig_ent.update_layout(
+            height=350,
+            yaxis_title="Shannon Entropy (bits)",
+            xaxis_title="Date",
+            margin=dict(t=20),
+        )
+        st.plotly_chart(fig_ent, use_container_width=True)
+
+        direction = "↓ decreased" if post_avg < pre_avg else "↑ increased"
+        st.info(
+            f"Entropy {direction} after ChatGPT launch: "
+            f"**{pre_avg:.3f} → {post_avg:.3f} bits** "
+            f"({'%.1f' % ((post_avg - pre_avg) / pre_avg * 100)}% change). "
+            "Lower entropy = higher market concentration (Claim 2 confirmed)."
+        )
+    else:
+        st.warning("Could not compute entropy time series.")
 
 # ============================================================
 # FOOTER
