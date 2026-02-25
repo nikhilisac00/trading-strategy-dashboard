@@ -3592,6 +3592,78 @@ What would you like to do?"""
                 return ("I have a portfolio ready for you! If you have questions about it, feel free to ask. "
                         "Say **'yes'** to add it to your portfolio, or **'no'** to start over.")
 
+        # Step 0.25: Handle pending rebalancing — execute or follow-up
+        if st.session_state.get("pending_rebalancing"):
+            _msg_lower_r = user_message.strip().lower()
+            _execute_re = r'\b(?:execute|do|implement|apply|proceed|confirm|yes)\b.*\b(?:rebalanc|it|now|that)\b|\b(?:rebalanc)\b.*\b(?:now|execute|do it|go ahead)\b|^(?:yes|do it|go ahead|proceed|confirm|execute)$'
+            is_execute = bool(re.search(_execute_re, _msg_lower_r))
+
+            if is_execute:
+                analysis = st.session_state.pending_rebalancing
+
+                # Use risk-appropriate target
+                risk_level = st.session_state.user_profile.get("risk_level", "moderate") if st.session_state.user_profile else "moderate"
+                risk_profile = FinancialPlannerAI.RISK_PROFILES.get(risk_level, FinancialPlannerAI.RISK_PROFILES["moderate"])
+                target = {
+                    "equity": sum(risk_profile["equity_range"]) / 2,
+                    "treasury": sum(risk_profile["treasury_range"]) / 2,
+                    "bond": sum(risk_profile["bond_range"]) / 2,
+                }
+
+                trades = FinancialPlannerAI.generate_rebalancing_trades(
+                    st.session_state.portfolio, target, analysis["total_value"]
+                )
+
+                # Check for infeasibility
+                infeasible = [t for t in trades if t.get("action") == "INFEASIBLE"]
+                if infeasible:
+                    reason = infeasible[0].get("reason", "Cannot achieve target beta with current user positions.")
+                    st.session_state.pending_rebalancing = None
+                    return f"⚠️ **Rebalancing not possible:** {reason}\n\nYou could adjust your risk level, reduce user-added position sizes, or accept a different beta target."
+
+                # Remove system positions that are being replaced
+                st.session_state.portfolio = [
+                    p for p in st.session_state.portfolio
+                    if p.get("user_added") or p.get("ticker") not in [t.get("ticker") for t in trades if t["action"] == "SELL"]
+                ]
+
+                # Add new positions for buys
+                for trade in trades:
+                    if trade["action"] == "BUY" and trade.get("ticker"):
+                        stock_data = get_stock_data(trade["ticker"], period="5d")
+                        if "error" not in stock_data and not stock_data["history"].empty:
+                            current_price = float(stock_data["history"]["Close"].iloc[-1])
+                        else:
+                            current_price = 100
+
+                        quantity = int(trade["amount"] / current_price)
+                        if quantity > 0:
+                            position = {
+                                "ticker": trade["ticker"],
+                                "type": "ETF",
+                                "side": "Long",
+                                "quantity": quantity,
+                                "entry_price": current_price,
+                                "entry_date": datetime.now().strftime("%Y-%m-%d"),
+                                "strike": None, "expiry": None, "yield_rate": None, "maturity": None,
+                                "id": len(st.session_state.portfolio)
+                            }
+                            st.session_state.portfolio.append(position)
+
+                st.session_state.pending_rebalancing = None
+
+                user_kept = [p.get("ticker") for p in st.session_state.portfolio if p.get("user_added")]
+                kept_msg = f" Your positions ({', '.join(user_kept)}) were preserved." if user_kept else ""
+                return f"✅ **Rebalancing executed!**{kept_msg} System positions were adjusted to achieve your target beta. Check the **Portfolio** tab to see your updated holdings."
+            else:
+                # Not an execute command — could be a question about rebalancing or rejection
+                _reject_re_r = r'^(?:no|cancel|nevermind|never mind|scrap|nah|nope)$|^no[,.\s!]'
+                if bool(re.search(_reject_re_r, _msg_lower_r)):
+                    st.session_state.pending_rebalancing = None
+                    return "No problem — I've cancelled the rebalancing. Your portfolio stays as-is."
+
+                # Let it fall through to normal chat flow (question about rebalancing, etc.)
+
         # Step 0.5: Detect if this is a QUESTION about existing portfolio
         # Questions should NEVER trigger portfolio creation — route to conversation
         msg_stripped = user_message.strip().lower()
