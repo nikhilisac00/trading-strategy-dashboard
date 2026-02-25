@@ -769,6 +769,32 @@ if "pending_rebalancing" not in st.session_state:
     st.session_state.pending_rebalancing = None
 
 # ============================================================
+# PORTFOLIO SPEC — canonical user preferences across all turns
+# ============================================================
+
+from dataclasses import dataclass, field as _dc_field
+from typing import List as _List, Optional as _Opt
+
+@dataclass
+class PortfolioSpec:
+    """Single source of truth for user goals, preferences, and constraints.
+    Persisted in st.session_state.portfolio_spec across every chat turn.
+    Every tab reads from this — never from one-off parsed values."""
+    budget: float = 0.0
+    risk_level: str = "moderate"
+    preferred_tickers: _List[str] = _dc_field(default_factory=list)  # user explicitly wants
+    excluded_tickers: _List[str] = _dc_field(default_factory=list)   # user said to avoid
+    max_drawdown: _Opt[float] = None      # e.g. 0.15 → 15% max drawdown
+    return_target: _Opt[float] = None     # e.g. 0.09 → 9% annual
+    horizon: _Opt[str] = None             # "short" / "medium" / "long"
+    bond_pct: _Opt[float] = None
+    treasury_pct: _Opt[float] = None
+    regime_tilts_allowed: bool = True
+
+if "portfolio_spec" not in st.session_state:
+    st.session_state.portfolio_spec = PortfolioSpec()
+
+# ============================================================
 # AI FINANCIAL PLANNER
 # ============================================================
 
@@ -1223,11 +1249,18 @@ class FinancialPlannerAI:
         allocations = {}
 
         # Reserve allocation for specific stocks user requested
+        # Give meaningful weight — users who say "I like X" should see X featured
         specific_stock_alloc = 0
         if specific_stocks:
-            # Give each specific stock a small allocation (5-10% each depending on risk)
-            per_stock = 0.05 if risk_level in ["very_conservative", "conservative"] else 0.10
-            specific_stock_alloc = min(0.30, len(specific_stocks) * per_stock)
+            per_stock_map = {
+                "very_conservative": 0.05,
+                "conservative":      0.08,
+                "moderate":          0.15,  # user-preferred stock gets real weight
+                "aggressive":        0.20,
+                "very_aggressive":   0.25,
+            }
+            per_stock = per_stock_map.get(risk_level, 0.15)
+            specific_stock_alloc = min(0.40, len(specific_stocks) * per_stock)
             for ticker in specific_stocks:
                 allocations[ticker.upper()] = per_stock
 
@@ -3296,11 +3329,16 @@ RULES:
                 if treasury_pct:
                     st.session_state.user_profile["constraints"]["treasury"] = treasury_pct
 
+                # Merge PortfolioSpec preferred_tickers with this-turn tickers
+                # This ensures preferences expressed in earlier turns are honoured
+                spec = st.session_state.portfolio_spec
+                all_tickers = list({t.upper() for t in (tickers or []) + spec.preferred_tickers} - set(spec.excluded_tickers))
+
                 portfolio = FinancialPlannerAI.generate_portfolio(
                     risk_level=risk_level,
                     budget=budget,
                     treasury_pct=treasury_pct,
-                    specific_stocks=tickers if tickers else None,
+                    specific_stocks=all_tickers if all_tickers else None,
                     return_target=return_target,
                     horizon=horizon,
                 )
@@ -3330,8 +3368,14 @@ RULES:
                     response += f"**Target Return:** {return_target*100:.0f}% (realistic range for {risk_level.replace('_', ' ')}: {ret_range[0]*100:.0f}-{ret_range[1]*100:.0f}%)\n"
                 if treasury_pct:
                     response += f"**Treasury Allocation:** {treasury_pct*100:.0f}%\n"
-                if tickers:
-                    response += f"**Requested Stocks:** {', '.join(tickers)}\n"
+                # Show preference adherence — what user asked for vs what they got
+                if all_tickers:
+                    pos_allocs = {p["ticker"]: p.get("allocation", 0) for p in portfolio.get("positions", [])}
+                    adherence_parts = []
+                    for t in all_tickers:
+                        alloc = pos_allocs.get(t, 0) * 100
+                        adherence_parts.append(f"{t} ✅ {alloc:.1f}%" if alloc > 0 else f"{t} ⚠️ not included")
+                    response += f"**Your Preferences:** {' | '.join(adherence_parts)}\n"
 
                 response += f"""
 ### Allocation Summary
@@ -3884,6 +3928,25 @@ What would you like to do?"""
                 st.session_state.user_profile["horizon"] = chatgpt_parsed["horizon"]
             if chatgpt_parsed.get("return_target"):
                 st.session_state.user_profile["return_target"] = chatgpt_parsed["return_target"]
+
+            # Update PortfolioSpec — accumulate preferences across every turn
+            # preferred_tickers are never overwritten, only added to
+            spec = st.session_state.portfolio_spec
+            if parsed_budget and parsed_budget > 0:
+                spec.budget = parsed_budget
+            if chatgpt_parsed.get("risk_level"):
+                spec.risk_level = chatgpt_parsed["risk_level"]
+            if chatgpt_parsed.get("horizon"):
+                spec.horizon = chatgpt_parsed["horizon"]
+            if chatgpt_parsed.get("return_target"):
+                spec.return_target = chatgpt_parsed["return_target"]
+            if chatgpt_parsed.get("treasury_pct") is not None:
+                spec.treasury_pct = chatgpt_parsed["treasury_pct"]
+            # Accumulate preferred tickers — never wipe, only add
+            for _t in (chatgpt_parsed.get("tickers") or []):
+                _t_up = _t.upper()
+                if _t_up and _t_up not in spec.preferred_tickers:
+                    spec.preferred_tickers.append(_t_up)
 
             # NOT READY — ChatGPT wants to keep talking (ask follow-ups, explain, etc.)
             if not gpt_ready and gpt_response:
