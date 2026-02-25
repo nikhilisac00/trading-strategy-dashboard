@@ -738,6 +738,102 @@ def get_historical_portfolio_performance(positions: list, period: str = "1mo"):
         "period": period,
     }
 
+@st.cache_data(ttl=3600)
+def get_markowitz_weights(
+    tickers: tuple,
+    risk_level: str,
+    preferred_tickers: tuple = (),
+    excluded_tickers: tuple = (),
+) -> dict | None:
+    """Constrained Markowitz minimum-variance optimizer.
+    Returns {ticker: weight} or None if optimization fails.
+    - preferred_tickers get a minimum allocation enforced
+    - excluded_tickers are forced to zero
+    - Covariance uses 20% shrinkage toward scaled identity
+    """
+    try:
+        from scipy.optimize import minimize as _minimize
+    except ImportError:
+        return None
+
+    try:
+        tickers = list(tickers)
+        if len(tickers) < 2:
+            return None
+
+        returns_data = {}
+        for t in tickers:
+            hist = yf.download(t, period="1y", progress=False, auto_adjust=True)
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = hist.columns.get_level_values(0)
+            prices = hist["Close"].squeeze() if not hist.empty else pd.Series(dtype=float)
+            daily = prices.pct_change().dropna()
+            if len(daily) >= 60:
+                returns_data[t] = daily
+
+        if len(returns_data) < 2:
+            return None
+
+        ret_df = pd.DataFrame(returns_data).dropna()
+        if len(ret_df) < 60:
+            return None
+
+        tickers_list = list(ret_df.columns)
+        n = len(tickers_list)
+
+        # Annualised covariance with shrinkage toward scaled identity
+        cov_raw = ret_df.cov().values * 252
+        avg_var = float(np.diag(cov_raw).mean())
+        shrink = 0.2
+        cov = (1 - shrink) * cov_raw + shrink * np.eye(n) * avg_var
+
+        # Per-risk position bounds
+        risk_bounds = {
+            "very_conservative": (0.0, 0.30),
+            "conservative":      (0.0, 0.35),
+            "moderate":          (0.0, 0.40),
+            "aggressive":        (0.0, 0.50),
+            "very_aggressive":   (0.0, 0.60),
+        }
+        lo, hi = risk_bounds.get(risk_level, (0.0, 0.40))
+        pref_min_map = {
+            "very_conservative": 0.05, "conservative": 0.08,
+            "moderate": 0.15, "aggressive": 0.20, "very_aggressive": 0.25,
+        }
+        pref_min = pref_min_map.get(risk_level, 0.15)
+        pref_up = {t.upper() for t in preferred_tickers}
+        excl_up = {t.upper() for t in excluded_tickers}
+
+        bounds = []
+        for t in tickers_list:
+            if t.upper() in excl_up:
+                bounds.append((0.0, 0.0))
+            elif t.upper() in pref_up:
+                bounds.append((pref_min, min(hi, 0.40)))
+            else:
+                bounds.append((lo, hi))
+
+        constraints = [{"type": "eq", "fun": lambda w: np.sum(w) - 1}]
+        w0 = np.ones(n) / n
+
+        result = _minimize(
+            lambda w: float(w @ cov @ w),
+            w0,
+            method="SLSQP",
+            bounds=bounds,
+            constraints=constraints,
+            options={"maxiter": 1000, "ftol": 1e-9},
+        )
+
+        if not result.success:
+            return None
+
+        weights = np.clip(result.x, 0, 1)
+        weights /= weights.sum()
+        return {t: float(w) for t, w in zip(tickers_list, weights)}
+    except Exception:
+        return None
+
 # ============================================================
 # PORTFOLIO STATE (Session State)
 # ============================================================
@@ -793,6 +889,11 @@ class PortfolioSpec:
 
 if "portfolio_spec" not in st.session_state:
     st.session_state.portfolio_spec = PortfolioSpec()
+
+if "last_regime" not in st.session_state:
+    st.session_state.last_regime = None
+if "last_regime_changed_at" not in st.session_state:
+    st.session_state.last_regime_changed_at = None
 
 # ============================================================
 # AI FINANCIAL PLANNER
@@ -1384,6 +1485,29 @@ class FinancialPlannerAI:
                 allocations["BND"] = bond_alloc * 0.50
                 allocations["LQD"] = bond_alloc * 0.30
                 allocations["TIP"] = bond_alloc * 0.20
+
+        # ── Stage C: Markowitz refinement (equity portion only) ──────────────
+        # Identify which tickers are equity (not treasury / bond)
+        _treasury_etfs = {"TLT", "IEF", "SHY"}
+        _bond_etfs = {"BND", "LQD", "HYG", "TIP"}
+        _fixed_income = _treasury_etfs | _bond_etfs
+        _equity_tickers = [t for t in allocations if t not in _fixed_income and allocations[t] > 0.001]
+        _pref = tuple(specific_stocks or [])
+        _excl = tuple(getattr(st.session_state.get("portfolio_spec", None), "excluded_tickers", None) or [])
+
+        if len(_equity_tickers) >= 2:
+            _mw = get_markowitz_weights(
+                tickers=tuple(_equity_tickers),
+                risk_level=risk_level,
+                preferred_tickers=_pref,
+                excluded_tickers=_excl,
+            )
+            if _mw:
+                # Redistribute weights within equity while keeping total equity alloc intact
+                _total_equity_alloc = sum(allocations[t] for t in _equity_tickers)
+                for t in _equity_tickers:
+                    allocations[t] = _mw.get(t, 0) * _total_equity_alloc
+        # ─────────────────────────────────────────────────────────────────────
 
         # Calculate portfolio metrics using REAL DATA
         # Fetch actual historical returns for each position
@@ -4211,6 +4335,9 @@ I can help you:
                 "constraints": {}
             }
             st.session_state.pending_portfolio = None
+            # Reset PortfolioSpec so preferences don't bleed into a new conversation
+            st.session_state.portfolio_spec = PortfolioSpec()
+            st.session_state.last_regime = None
             st.rerun()
 
     st.markdown("---")
@@ -4339,11 +4466,32 @@ if alerts:
         else:
             st.warning(f"⚠️ {alert}")
 
+# ── Regime Explainability: detect changes, enforce min hold, show delta ──
+_regime_impact = {
+    "LOW":      {"equity_adj": "+5%",  "note": "Risk-on — growth assets favoured"},
+    "NORMAL":   {"equity_adj": "±0%",  "note": "Neutral — standard positioning"},
+    "ELEVATED": {"equity_adj": "−5%",  "note": "Caution — reduce equity exposure"},
+    "CRISIS":   {"equity_adj": "−15%", "note": "Defensive — capital preservation"},
+}
+_prev_regime = st.session_state.last_regime
+_regime_changed = _prev_regime is not None and _prev_regime != vix_regime
+if _regime_changed:
+    _impact = _regime_impact.get(vix_regime, {})
+    st.warning(
+        f"**Regime Shift Detected:** {_prev_regime} → {vix_regime} | "
+        f"Equity weight guidance: {_impact.get('equity_adj','?')} | "
+        f"{_impact.get('note','')}. "
+        f"Rebalance your portfolio to reflect the new regime."
+    )
+st.session_state.last_regime = vix_regime
+
 # Top metrics
 col1, col2, col3, col4 = st.columns(4)
 with col1:
     regime_colors = {"LOW": "🟢", "NORMAL": "🟡", "ELEVATED": "🟠", "CRISIS": "🔴"}
+    _regime_note = _regime_impact.get(vix_regime, {}).get("note", "")
     st.metric("VIX", f"{vix_stats['current']:.2f}", f"{vix_regime} {regime_colors.get(vix_regime, '')}")
+    st.caption(_regime_note)
 with col2:
     st.metric("VIX Percentile", f"{vix_stats['percentile']:.0f}th", "vs 2Y")
 with col3:
@@ -4375,8 +4523,8 @@ with tab1:
     st.header("Active Trading Signals")
 
     # Get strategies for current profile and regime
-    # Map AI planner risk level to RISK_PROFILES key
-    ai_risk_level = st.session_state.user_profile.get("risk_level", "moderate")
+    # Read from PortfolioSpec — single source of truth for user risk level
+    ai_risk_level = st.session_state.portfolio_spec.risk_level
     risk_profile_key = {
         "conservative": "Conservative",
         "moderate": "Moderate",
