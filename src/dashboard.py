@@ -1152,6 +1152,14 @@ class FinancialPlannerAI:
             info = stock.info
             hist = stock.history(period="5d")
 
+            # Validate: must have real price data — reject tickers with no market history
+            # and no recognized market price (catches non-existent or mis-parsed tickers)
+            has_price = not hist.empty
+            has_info_price = bool(info.get("regularMarketPrice") or info.get("currentPrice"))
+            has_market_cap = bool(info.get("marketCap") and info.get("marketCap", 0) > 0)
+            if not has_price and not has_info_price and not has_market_cap:
+                return {"ticker": ticker.upper(), "error": f"'{ticker}' is not a valid ticker symbol — no market data found"}
+
             current_price = float(hist['Close'].iloc[-1]) if not hist.empty else info.get("currentPrice", 100)
 
             return {
@@ -2796,7 +2804,12 @@ class SmartFinancialAgent:
                        'ETF', 'CEO', 'CFO', 'IPO', 'USA', 'NYC', 'API', 'WITH', 'ALSO',
                        'SOME', 'ANY', 'HAVE', 'THIS', 'THAT', 'FROM', 'BEEN', 'WILL',
                        'INTO', 'JUST', 'ONLY', 'OVER', 'SUCH', 'MAKE', 'THAN', 'THEM',
-                       'WELL', 'BACK', 'YEAR', 'WHEN', 'YOUR', 'WHAT', 'THEN', 'LOOK'}
+                       'WELL', 'BACK', 'YEAR', 'WHEN', 'YOUR', 'WHAT', 'THEN', 'LOOK',
+                       # Action verbs — never valid tickers
+                       'ADD', 'BUY', 'SELL', 'REMOVE', 'DROP', 'DELETE', 'KEEP', 'HOLD',
+                       'SWAP', 'REPLACE', 'INSTEAD', 'PLEASE', 'ADJUST',
+                       # Company names (use ticker symbol, not company name)
+                       'TESLA', 'APPLE', 'AMAZON', 'GOOGLE', 'META', 'NVIDIA', 'MICROSOFT'}
 
         # 1. Find ALL CAPS tickers (2-5 letters)
         uppercase_tickers = re.findall(r'\b([A-Z]{2,5})\b', text)
@@ -2840,6 +2853,17 @@ class SmartFinancialAgent:
         for t in stock_matches:
             if t.upper() not in non_tickers and t.upper() not in valid_tickers:
                 valid_tickers.append(t.upper())
+
+        # 5. Remove-context tickers: catch lowercase tickers after remove/sell/drop keywords
+        # e.g., "remove tip" → TIP, even when typed in lowercase
+        remove_ctx_matches = re.findall(
+            r'(?:remove|sell|drop|delete|get\s+rid\s+of)\s+([a-zA-Z]{2,5})(?:\s|$)',
+            text, re.IGNORECASE
+        )
+        for t in remove_ctx_matches:
+            t_up = t.upper()
+            if t_up not in non_tickers and t_up not in valid_tickers:
+                valid_tickers.append(t_up)
 
         return valid_tickers
 
@@ -2920,6 +2944,25 @@ class SmartFinancialAgent:
         if (risk_level or tickers or return_target) and intent == "unknown":
             intent = "create_portfolio"
 
+        # Detect which tickers are being removed vs added (for compound messages)
+        # e.g., "remove TIP and add TSLA" → remove_tickers=["TIP"], tickers=["TSLA"]
+        _remove_words = {
+            'ADD', 'BUY', 'SELL', 'REMOVE', 'DROP', 'DELETE', 'KEEP', 'HOLD',
+            'SWAP', 'REPLACE', 'INSTEAD', 'PLEASE', 'ADJUST',
+            'TESLA', 'APPLE', 'AMAZON', 'GOOGLE', 'META', 'NVIDIA', 'MICROSOFT',
+        }
+        remove_tickers = []
+        remove_ctx = re.findall(
+            r'(?:remove|sell|drop|delete|get\s+rid\s+of)\s+([a-zA-Z]{2,5})(?:\s|$)',
+            text, re.IGNORECASE
+        )
+        for t in remove_ctx:
+            t_up = t.upper()
+            if t_up not in _remove_words:
+                remove_tickers.append(t_up)
+        # Remove the remove_tickers from the add-tickers list to avoid adding what should be removed
+        tickers = [t for t in tickers if t not in remove_tickers]
+
         return {
             "intent": intent,
             "intent_confidence": intent_confidence,
@@ -2928,6 +2971,7 @@ class SmartFinancialAgent:
             "budget": budget,
             "treasury_pct": treasury_pct,
             "tickers": tickers,
+            "remove_tickers": remove_tickers,
             "return_target": return_target,
             "percentages": entities.get("percentages", []) + regex_entities.get("percentages", []),
             "raw_entities": entities,
@@ -3547,6 +3591,16 @@ RULES:
                     return "I'd be happy to add a stock to your portfolio. Which stock would you like? (e.g., 'add Tesla' or 'buy AAPL')"
 
                 responses = []
+                # Handle compound "remove X and add Y" — process removals first
+                for ticker in parsed.get("remove_tickers", []):
+                    before = len(st.session_state.portfolio)
+                    st.session_state.portfolio = [
+                        p for p in st.session_state.portfolio
+                        if p.get("ticker", "").upper() != ticker.upper()
+                    ]
+                    if len(st.session_state.portfolio) < before:
+                        responses.append(f"Removed **{ticker}** from your portfolio.")
+
                 for ticker in parsed["tickers"]:
                     stock_info = FinancialPlannerAI.get_stock_info_for_portfolio(ticker)
                     if stock_info.get("error"):
@@ -3907,8 +3961,15 @@ What would you like to do?"""
         # Step 0.25: Handle pending rebalancing — execute or follow-up
         if st.session_state.get("pending_rebalancing"):
             _msg_lower_r = user_message.strip().lower()
-            _execute_re = r'\b(?:execute|do|implement|apply|proceed|confirm|yes)\b.*\b(?:rebalanc|it|now|that)\b|\b(?:rebalanc)\b.*\b(?:now|execute|do it|go ahead)\b|^(?:yes|do it|go ahead|proceed|confirm|execute)$'
-            is_execute = bool(re.search(_execute_re, _msg_lower_r))
+            # Simple phrase matching — regex word-boundary approach was too strict
+            # and failed to match "execute rebalancing", "rebalance now", etc.
+            _execute_phrases = [
+                "execute rebalancing", "execute the rebalancing", "rebalance now",
+                "do the rebalancing", "implement rebalancing", "apply rebalancing",
+                "proceed with rebalancing", "yes rebalance", "rebalance it",
+                "yes", "do it", "go ahead", "proceed", "confirm", "execute", "apply",
+            ]
+            is_execute = any(ph in _msg_lower_r for ph in _execute_phrases)
 
             if is_execute:
                 analysis = st.session_state.pending_rebalancing
@@ -4073,7 +4134,9 @@ What would you like to do?"""
                     spec.preferred_tickers.append(_t_up)
 
             # NOT READY — ChatGPT wants to keep talking (ask follow-ups, explain, etc.)
-            if not gpt_ready and gpt_response:
+            # Exception: don't intercept a clear rule-based remove_stock action with known tickers
+            _is_clear_remove = (rule_intent == "remove_stock" and parsed.get("tickers"))
+            if not gpt_ready and gpt_response and not _is_clear_remove:
                 return gpt_response
 
             # READY — ChatGPT has enough info, merge into parsed and execute
@@ -5404,8 +5467,10 @@ with tab4:
                                      for p in st.session_state.portfolio)
                     rebal_budget = rebal_total if rebal_total > 0 else 100000
 
-                    # Clear portfolio for rebuild
-                    st.session_state.portfolio = []
+                    # Keep user-added positions; only remove system-generated ones
+                    st.session_state.portfolio = [
+                        p for p in st.session_state.portfolio if p.get("user_added")
+                    ]
 
                     # Calculate exact equity/bond split to hit target beta
                     # Formula: target_beta = equity_pct * equity_beta + bond_pct * bond_beta
